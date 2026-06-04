@@ -1,0 +1,34 @@
+{
+  "cases": [
+    {
+      "name": "edits_apply_reverse_offset_order",
+      "input": "AAA\nBBB\nCCC\nDDD\n",
+      "edits": [
+        {"oldText": "AAA", "newText": "AAAAAA"},
+        {"oldText": "CCC", "newText": "C"}
+      ],
+      "want": "AAAAAA\nBBB\nC\nDDD\n"
+    },
+    {
+      "name": "edits_listed_out_of_order_still_apply",
+      "input": "one two three four\n",
+      "edits": [
+        {"oldText": "four", "newText": "4"},
+        {"oldText": "one", "newText": "1"}
+      ],
+      "want": "1 two three 4\n"
+    },
+    {
+      "name": "insertion_via_empty_replacement_target_unique",
+      "input": "keep\nremove me\nkeep2\n",
+      "edits": [{"oldText": "remove me\n", "newText": ""}],
+      "want": "keep\nkeep2\n"
+    },
+    {
+      "name": "all_exact_no_normalization_rewrite",
+      "input": "trailing spaces here   \nedit me\n",
+      "edits": [{"oldText": "edit me", "newText": "edited"}],
+      "want": "trailing spaces here   \nedited\n"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "cases": [
+    {
+      "name": "smart_quotes_in_oldText_match_ascii_file",
+      "input": "say \"hello\" to the 'world'\nsecond line\n",
+      "edits": [{"oldText": "say “hello” to the ‘world’", "newText": "say \"goodbye\" to the 'world'"}],
+      "want": "say \"goodbye\" to the 'world'\nsecond line\n"
+    },
+    {
+      "name": "unicode_dashes_match_ascii_hyphen",
+      "input": "a - b - c\nx-y\n",
+      "edits": [{"oldText": "a — b – c", "newText": "a + b + c"}],
+      "want": "a + b + c\nx-y\n"
+    },
+    {
+      "name": "trailing_whitespace_fuzzy_rewrites_normalized",
+      "input": "func main() {   \n\tcall()\t\n}\n",
+      "edits": [{"oldText": "func main() {\n\tcall()\n}", "newText": "func main() {\n\tcall2()\n}"}],
+      "want": "func main() {\n\tcall2()\n}\n"
+    },
+    {
+      "name": "nfkc_folds_fullwidth_chars",
+      "input": "value = 42\n",
+      "edits": [{"oldText": "value = ４２", "newText": "value = 43"}],
+      "want": "value = 43\n"
+    },
+    {
+      "name": "nbsp_in_oldText_matches_plain_space",
+      "input": "alpha beta\n",
+      "edits": [{"oldText": "alpha\u00a0beta", "newText": "alpha gamma"}],
+      "want": "alpha gamma\n"
+    }
+  ]
+}

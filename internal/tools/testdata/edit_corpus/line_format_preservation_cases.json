@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "name": "crlf_preserved_after_lf_match",
+      "input": "one\r\ntwo\r\nthree\r\n",
+      "edits": [{"oldText": "two", "newText": "TWO"}],
+      "want": "one\r\nTWO\r\nthree\r\n"
+    },
+    {
+      "name": "bom_preserved",
+      "input": "\ufeffhead\nbody\n",
+      "edits": [{"oldText": "body", "newText": "torso"}],
+      "want": "\ufeffhead\ntorso\n"
+    },
+    {
+      "name": "bom_and_crlf_together",
+      "input": "\ufeffa\r\nb\r\n",
+      "edits": [{"oldText": "b", "newText": "B"}],
+      "want": "\ufeffa\r\nB\r\n"
+    },
+    {
+      "name": "multiline_oldText_across_crlf",
+      "input": "start\r\nmid1\r\nmid2\r\nend\r\n",
+      "edits": [{"oldText": "mid1\nmid2", "newText": "merged"}],
+      "want": "start\r\nmerged\r\nend\r\n"
+    }
+  ]
+}

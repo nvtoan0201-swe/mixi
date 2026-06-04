@@ -1,0 +1,31 @@
+{
+  "cases": [
+    {
+      "name": "non_unique_oldText",
+      "input": "dup\nother\ndup\n",
+      "edits": [{"oldText": "dup", "newText": "x"}],
+      "wantErrContains": "Found 2 occurrences. The text must be unique — include more surrounding context."
+    },
+    {
+      "name": "not_found_with_closest_line_hint",
+      "input": "func handleRequest(w http.ResponseWriter) {\nreturn nil\n}\n",
+      "edits": [{"oldText": "func handleRequests(w http.ResponseWriter) {", "newText": "x"}],
+      "wantErrContains": "oldText not found in"
+    },
+    {
+      "name": "not_found_hint_names_closest_line",
+      "input": "func handleRequest(w http.ResponseWriter) {\nreturn nil\n}\n",
+      "edits": [{"oldText": "func handleRequests(w http.ResponseWriter) {", "newText": "x"}],
+      "wantErrContains": "closest match is line 1"
+    },
+    {
+      "name": "overlapping_edits_rejected",
+      "input": "abcdefghij\n",
+      "edits": [
+        {"oldText": "abcdef", "newText": "x"},
+        {"oldText": "defghi", "newText": "y"}
+      ],
+      "wantErrContains": "edits[0] and edits[1] overlap; merge them"
+    }
+  ]
+}
