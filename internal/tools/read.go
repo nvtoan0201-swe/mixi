@@ -11,7 +11,10 @@ import (
 	"github.com/user/mixi-agent/internal/ai"
 )
 
-type readTool struct{ cwd string }
+type readTool struct {
+	cwd string
+	obs FileObserver
+}
 
 func (t *readTool) Name() string { return "read" }
 
@@ -48,12 +51,20 @@ func (t *readTool) Execute(ctx context.Context, args json.RawMessage, _ chan<- T
 		return ToolResult{}, fmt.Errorf("read %s: %w", a.Path, err)
 	}
 	if mime := sniffImageMime(data); mime != "" {
-		return readImage(a.Path, data, mime)
+		res, err := readImage(a.Path, data, mime)
+		if err == nil && !res.IsError {
+			observeRead(t.obs, path, data)
+		}
+		return res, err
 	}
 	if bytes.IndexByte(data[:min(len(data), 8192)], 0) >= 0 {
 		return Errorf("read %s: binary file; use bash xxd/strings", a.Path), nil
 	}
-	return readText(a.Path, string(data), a.Offset, a.Limit)
+	res, err := readText(a.Path, string(data), a.Offset, a.Limit)
+	if err == nil && !res.IsError {
+		observeRead(t.obs, path, data)
+	}
+	return res, err
 }
 
 // readText pages 1-indexed lines and head-truncates with continuation hints.

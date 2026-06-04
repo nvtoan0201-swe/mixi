@@ -34,6 +34,8 @@ type ScriptTurn struct {
 	Err string `json:"err,omitempty"`
 	// WaitCtx blocks the stream until the run is aborted (SIGINT testing).
 	WaitCtx bool `json:"waitCtx,omitempty"`
+	// Usage is reported on the final message (drives compaction triggers).
+	Usage ai.Usage `json:"usage,omitempty"`
 }
 
 // ScriptToolCall scripts one tool invocation.
@@ -95,7 +97,7 @@ func (p *provider) load() {
 	}
 	turns := make([]agenttest.Turn, len(s.Turns))
 	for i, t := range s.Turns {
-		turns[i] = agenttest.Turn{Text: t.Text, Err: t.Err, WaitCtx: t.WaitCtx}
+		turns[i] = agenttest.Turn{Text: t.Text, Err: t.Err, WaitCtx: t.WaitCtx, Usage: t.Usage}
 		for _, tc := range t.ToolCalls {
 			args := string(tc.Args)
 			turns[i].ToolCalls = append(turns[i].ToolCalls, agenttest.ToolCallSpec{

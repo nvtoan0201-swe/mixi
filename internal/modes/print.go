@@ -9,7 +9,6 @@ import (
 
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/ai"
-	"github.com/user/mixi-agent/internal/session"
 )
 
 // Exit codes per the print-mode contract. 130 = 128+SIGINT, the shell
@@ -29,24 +28,19 @@ type PrintOptions struct {
 	PrintStats bool     // usage summary on errOut after the run
 }
 
-// PrintDeps wires the run: an assembled agent, the session store events are
-// persisted to, and the output writers.
+// PrintDeps wires the run: an assembled agent (whose hooks own persistence
+// and context management) and the output writers.
 type PrintDeps struct {
 	Agent  *agent.Agent
-	Store  session.Storage
 	Out    io.Writer
 	ErrOut io.Writer
 	Log    *slog.Logger
 }
 
 // RunPrint executes one headless run and returns the process exit code.
-// Every message event is persisted as it happens, so a crash mid-run loses
-// at most the in-flight turn.
+// Message persistence happens synchronously inside the agent's hooks, so a
+// crash mid-run loses at most the in-flight turn.
 func RunPrint(ctx context.Context, d PrintDeps, opts PrintOptions) int {
-	log := d.Log
-	if log == nil {
-		log = slog.Default()
-	}
 	var sink EventSink
 	if opts.JSON {
 		sink = NewJSONSink(d.Out)
@@ -61,7 +55,6 @@ func RunPrint(ctx context.Context, d PrintDeps, opts PrintOptions) int {
 	endReason := make(chan agent.EndReason, 1)
 	go func() {
 		for ev := range events {
-			persistEvent(d.Store, ev, log)
 			stats.observe(ev)
 			sink.Emit(ev)
 			if end, ok := ev.(agent.EvAgentEnd); ok {
@@ -95,32 +88,6 @@ func RunPrint(ctx context.Context, d PrintDeps, opts PrintOptions) int {
 		return ExitSIGINT
 	default: // done, maxTurns — the run stopped cleanly
 		return ExitOK
-	}
-}
-
-// persistEvent appends conversation-bearing events to the session: user and
-// assistant messages arrive as EvMessageEnd, tool results as EvToolEnd.
-// Persistence failures are reported but never stop the run — the
-// conversation in memory is still worth finishing.
-func persistEvent(store session.Storage, ev agent.Event, log *slog.Logger) {
-	if store == nil {
-		return
-	}
-	var entry session.Entry
-	switch e := ev.(type) {
-	case agent.EvMessageEnd:
-		mm, ok := e.Msg.(agent.ModelMessage)
-		if !ok {
-			return // harness items get session forms in the compaction phase
-		}
-		entry = &session.MessageEntry{Message: mm.Msg}
-	case agent.EvToolEnd:
-		entry = &session.MessageEntry{Message: e.Result}
-	default:
-		return
-	}
-	if err := store.Append(entry); err != nil {
-		log.Error("session append failed; conversation continues unsaved", "error", err)
 	}
 }
 

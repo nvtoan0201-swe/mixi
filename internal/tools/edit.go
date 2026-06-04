@@ -11,6 +11,7 @@ import (
 type editTool struct {
 	cwd string
 	mq  *mutQueue
+	obs FileObserver
 }
 
 func (t *editTool) Name() string { return "edit" }
@@ -75,6 +76,7 @@ func (t *editTool) Execute(ctx context.Context, args json.RawMessage, _ chan<- T
 	if err := atomicWrite(path, []byte(out), false); err != nil {
 		return ToolResult{}, fmt.Errorf("edit %s: %w", a.Path, err)
 	}
+	observeWrite(t.obs, path, []byte(out))
 
 	res := Text(fmt.Sprintf("Applied %d edit(s) to %s", len(a.Edits), a.Path))
 	res.Details = details

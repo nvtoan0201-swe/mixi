@@ -106,6 +106,10 @@ func registryStream(ctx context.Context, model ai.Model, c ai.Context, opts ai.S
 // Subscribe registers an event consumer; the returned func unsubscribes.
 func (a *Agent) Subscribe() (<-chan Event, func()) { return a.bus.Subscribe() }
 
+// Notify publishes a harness-level event (compaction progress, notices) to
+// every subscriber alongside the loop's own events.
+func (a *Agent) Notify(ev Event) { a.bus.Publish(ev) }
+
 // Messages returns a copy of the conversation so far.
 func (a *Agent) Messages() []AgentMessage {
 	a.mu.Lock()

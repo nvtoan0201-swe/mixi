@@ -64,19 +64,6 @@ func resolveSessionPath(m *session.Manager, cwd, ref string) (string, error) {
 	}
 }
 
-// historyFromSession projects the session's active path into agent messages
-// so a resumed conversation continues where it stopped. Non-message entries
-// (labels, model changes) don't contribute conversation content.
-func historyFromSession(store session.Storage) []agent.AgentMessage {
-	var history []agent.AgentMessage
-	for _, e := range store.PathToRoot(store.LeafID()) {
-		if me, ok := e.(*session.MessageEntry); ok {
-			history = append(history, agent.ModelMessage{Msg: me.Message})
-		}
-	}
-	return history
-}
-
 // systemPrompt resolves --system-prompt (a file path or literal text, with
 // --append-system-prompt added) or builds the default prompt.
 func systemPrompt(f *config.Flags, reg *tools.Registry, cwd string) string {

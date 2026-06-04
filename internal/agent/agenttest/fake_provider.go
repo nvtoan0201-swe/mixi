@@ -37,6 +37,9 @@ type Turn struct {
 	// WaitCtx blocks the stream until the caller's ctx is cancelled, then
 	// emits an aborted error (exercises abort-during-stream).
 	WaitCtx bool
+	// Usage is reported on the final message — scripts compaction triggers,
+	// which anchor token estimates on real provider usage.
+	Usage ai.Usage
 }
 
 // Provider replays scripted turns in call order. Safe for concurrent use;
@@ -141,5 +144,6 @@ func playTurn(ctx context.Context, ch chan<- ai.StreamEvent, model ai.Model, tur
 		reason = ai.StopReasonToolUse
 	}
 	partial.StopReason = reason
+	partial.Usage = turn.Usage
 	ch <- ai.EventDone{Reason: reason, Message: partial}
 }

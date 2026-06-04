@@ -16,10 +16,12 @@ import (
 
 	"github.com/user/mixi-agent/internal/agent"
 	_ "github.com/user/mixi-agent/internal/ai/anthropic" // registers provider
+	"github.com/user/mixi-agent/internal/compact"
 	"github.com/user/mixi-agent/internal/config"
 	"github.com/user/mixi-agent/internal/modes"
 	"github.com/user/mixi-agent/internal/session"
 	"github.com/user/mixi-agent/internal/tools"
+	"github.com/user/mixi-agent/internal/workset"
 )
 
 // version is stamped by the release build via -ldflags.
@@ -112,13 +114,29 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	}
 	defer store.Close()
 
+	ws := workset.New()
 	reg := tools.NewRegistry()
-	jobs, err := tools.RegisterBuiltins(reg, tools.Options{Cwd: cwd, Fsync: rc.Fsync})
+	jobs, err := tools.RegisterBuiltins(reg, tools.Options{Cwd: cwd, Fsync: rc.Fsync, Observer: ws})
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: register tools: %v\n", err)
 		return modes.ExitRunErr
 	}
 	defer jobs.KillAll()
+
+	apiKey, _ := apiKeyFromEnv(rc.Model.Provider)
+	ctrl := compact.NewController(compact.ControllerConfig{
+		Store:      store,
+		WS:         ws,
+		Summarizer: &compact.LLMSummarizer{Model: rc.Model, APIKey: apiKey},
+		Model:      rc.Model,
+		MaxTokens:  rc.MaxTokens,
+		Reserve:    settings.Compaction.ReserveTokens,
+		KeepRecent: settings.Compaction.KeepRecentTokens,
+		Enabled:    !settings.Compaction.Disabled,
+		Log:        log,
+	})
+	hooks := ctrl.Hooks()
+	hooks.GetAPIKey = apiKeyFromEnv
 
 	a := agent.New(agent.Config{
 		Model:        rc.Model,
@@ -126,10 +144,11 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		SystemPrompt: systemPrompt(f, reg, cwd),
 		StreamOpts:   streamOpts(rc, store),
 		MaxTurns:     maxTurns(rc.MaxTurns),
-		History:      historyFromSession(store),
-		Hooks:        agent.Hooks{GetAPIKey: apiKeyFromEnv},
+		History:      ctrl.LoadHistory(),
+		Hooks:        hooks,
 		Log:          log,
 	})
+	ctrl.SetNotify(a.Notify)
 
 	// The permission engine arrives in a later phase; until then every tool
 	// call runs unrestricted regardless of --permission-mode.
@@ -139,7 +158,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	defer stopSignals()
 
 	return modes.RunPrint(context.Background(), modes.PrintDeps{
-		Agent: a, Store: store, Out: stdout, ErrOut: stderr, Log: log,
+		Agent: a, Out: stdout, ErrOut: stderr, Log: log,
 	}, modes.PrintOptions{
 		Prompt:     rc.Prompt,
 		Messages:   rc.Messages,

@@ -39,6 +39,12 @@ type PermissionSettings struct {
 
 type CompactionSettings struct {
 	Disabled bool `json:"disabled"`
+	// ReserveTokens is the context-window headroom that absorbs estimation
+	// drift and holds the summary budget (0 → built-in default).
+	ReserveTokens int `json:"reserveTokens"`
+	// KeepRecentTokens is the conversation tail kept verbatim through a
+	// compaction (0 → built-in default).
+	KeepRecentTokens int `json:"keepRecentTokens"`
 }
 
 type FileSettings struct {

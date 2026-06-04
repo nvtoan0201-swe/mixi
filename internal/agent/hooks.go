@@ -38,6 +38,18 @@ type Hooks struct {
 	ShouldStop func(turn int, last *ai.AssistantMessage) bool
 	// PrepareNextTurn may swap model/thinking before the next turn.
 	PrepareNextTurn func(turn int) *TurnUpdate
+	// OnMessage observes every message the loop records, synchronously and
+	// in order — the persistence seam. The loop does not proceed until it
+	// returns, so downstream consumers (compaction) always see a complete
+	// session.
+	OnMessage func(m AgentMessage)
+	// AfterTurn runs after each turn's tool results are recorded — the
+	// post-turn compaction trigger. Errors are logged and ignored.
+	AfterTurn func(ctx context.Context, turn int) error
+	// OnContextOverflow runs when the provider rejects a request as too
+	// large. Returning true means context was freed (compaction) and the
+	// turn should be retried once; the failed message is discarded.
+	OnContextOverflow func(ctx context.Context) bool
 }
 
 // transformContext applies the hook, falling back to the input on error.
@@ -103,4 +115,29 @@ func (h Hooks) prepareNextTurn(turn int) *TurnUpdate {
 		return nil
 	}
 	return h.PrepareNextTurn(turn)
+}
+
+// onMessage forwards a recorded message to the hook.
+func (h Hooks) onMessage(m AgentMessage) {
+	if h.OnMessage != nil {
+		h.OnMessage(m)
+	}
+}
+
+// afterTurn runs the post-turn hook; hook errors are no-ops.
+func (h Hooks) afterTurn(ctx context.Context, log *slog.Logger, turn int) {
+	if h.AfterTurn == nil {
+		return
+	}
+	if err := h.AfterTurn(ctx, turn); err != nil {
+		log.Warn("agent: AfterTurn hook failed, ignoring", "err", err)
+	}
+}
+
+// onContextOverflow reports whether the hook freed context for a retry.
+func (h Hooks) onContextOverflow(ctx context.Context) bool {
+	if h.OnContextOverflow == nil {
+		return false
+	}
+	return h.OnContextOverflow(ctx)
 }

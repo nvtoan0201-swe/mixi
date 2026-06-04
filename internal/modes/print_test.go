@@ -9,6 +9,7 @@ import (
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/agent/agenttest"
 	"github.com/user/mixi-agent/internal/ai"
+	"github.com/user/mixi-agent/internal/compact"
 	"github.com/user/mixi-agent/internal/session"
 	"github.com/user/mixi-agent/internal/tools"
 )
@@ -26,7 +27,8 @@ func (e *echoTool) Execute(ctx context.Context, args json.RawMessage, _ chan<- t
 }
 
 // newPrintAgent assembles an agent over a scripted provider stream plus a
-// fresh in-memory session store.
+// fresh in-memory session store, wired the way main does: the context
+// controller's hooks own persistence.
 func newPrintAgent(t *testing.T, turns ...agenttest.Turn) (*agent.Agent, session.Storage, *echoTool) {
 	t.Helper()
 	reg := tools.NewRegistry()
@@ -35,13 +37,22 @@ func newPrintAgent(t *testing.T, turns ...agenttest.Turn) (*agent.Agent, session
 		t.Fatal(err)
 	}
 	fake := agenttest.New(turns...)
-	a := agent.New(agent.Config{
-		Model:  ai.Model{API: "test", Provider: "test", ID: "scripted"},
-		Tools:  reg,
-		Stream: fake.Stream,
-	})
 	m := session.Manager{Root: t.TempDir()}
-	return a, m.InMemory("/tmp/proj"), echo
+	store := m.InMemory("/tmp/proj")
+	model := ai.Model{API: "test", Provider: "test", ID: "scripted", ContextWindow: 200_000, MaxOutput: 8192}
+	ctrl := compact.NewController(compact.ControllerConfig{
+		Store: store,
+		Model: model,
+	})
+	a := agent.New(agent.Config{
+		Model:   model,
+		Tools:   reg,
+		Stream:  fake.Stream,
+		Hooks:   ctrl.Hooks(),
+		History: ctrl.LoadHistory(),
+	})
+	ctrl.SetNotify(a.Notify)
+	return a, store, echo
 }
 
 func TestRunPrintTextOutputAndPersistence(t *testing.T) {
@@ -50,7 +61,7 @@ func TestRunPrintTextOutputAndPersistence(t *testing.T) {
 		agenttest.Turn{Text: "final answer"},
 	)
 	var out, errOut strings.Builder
-	code := RunPrint(context.Background(), PrintDeps{Agent: a, Store: store, Out: &out, ErrOut: &errOut},
+	code := RunPrint(context.Background(), PrintDeps{Agent: a, Out: &out, ErrOut: &errOut},
 		PrintOptions{Prompt: "do it"})
 	if code != ExitOK {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut.String())
@@ -83,12 +94,12 @@ func TestRunPrintTextOutputAndPersistence(t *testing.T) {
 }
 
 func TestRunPrintJSONStream(t *testing.T) {
-	a, store, _ := newPrintAgent(t,
+	a, _, _ := newPrintAgent(t,
 		agenttest.Turn{Text: "step", ToolCalls: []agenttest.ToolCallSpec{{ID: "t1", Name: "echo"}}},
 		agenttest.Turn{Text: "done"},
 	)
 	var out strings.Builder
-	code := RunPrint(context.Background(), PrintDeps{Agent: a, Store: store, Out: &out, ErrOut: &strings.Builder{}},
+	code := RunPrint(context.Background(), PrintDeps{Agent: a, Out: &out, ErrOut: &strings.Builder{}},
 		PrintOptions{Prompt: "go", JSON: true})
 	if code != ExitOK {
 		t.Fatalf("exit = %d", code)
@@ -123,7 +134,7 @@ func TestRunPrintFollowUpsExtendRun(t *testing.T) {
 		agenttest.Turn{Text: "second"},
 	)
 	var out strings.Builder
-	code := RunPrint(context.Background(), PrintDeps{Agent: a, Store: store, Out: &out, ErrOut: &strings.Builder{}},
+	code := RunPrint(context.Background(), PrintDeps{Agent: a, Out: &out, ErrOut: &strings.Builder{}},
 		PrintOptions{Prompt: "one", Messages: []string{"two"}})
 	if code != ExitOK {
 		t.Fatalf("exit = %d", code)
@@ -137,9 +148,9 @@ func TestRunPrintFollowUpsExtendRun(t *testing.T) {
 }
 
 func TestRunPrintErrorStopReasonExitsOne(t *testing.T) {
-	a, store, _ := newPrintAgent(t, agenttest.Turn{Err: "model exploded"})
+	a, _, _ := newPrintAgent(t, agenttest.Turn{Err: "model exploded"})
 	var out, errOut strings.Builder
-	code := RunPrint(context.Background(), PrintDeps{Agent: a, Store: store, Out: &out, ErrOut: &errOut},
+	code := RunPrint(context.Background(), PrintDeps{Agent: a, Out: &out, ErrOut: &errOut},
 		PrintOptions{Prompt: "boom"})
 	if code != ExitRunErr {
 		t.Fatalf("exit = %d, want %d", code, ExitRunErr)
@@ -150,9 +161,9 @@ func TestRunPrintErrorStopReasonExitsOne(t *testing.T) {
 }
 
 func TestRunPrintStatsOnStderr(t *testing.T) {
-	a, store, _ := newPrintAgent(t, agenttest.Turn{Text: "hi"})
+	a, _, _ := newPrintAgent(t, agenttest.Turn{Text: "hi"})
 	var out, errOut strings.Builder
-	code := RunPrint(context.Background(), PrintDeps{Agent: a, Store: store, Out: &out, ErrOut: &errOut},
+	code := RunPrint(context.Background(), PrintDeps{Agent: a, Out: &out, ErrOut: &errOut},
 		PrintOptions{Prompt: "hello", PrintStats: true})
 	if code != ExitOK {
 		t.Fatalf("exit = %d", code)
@@ -166,12 +177,12 @@ func TestRunPrintStatsOnStderr(t *testing.T) {
 }
 
 func TestRunPrintAbortExits130(t *testing.T) {
-	a, store, _ := newPrintAgent(t, agenttest.Turn{WaitCtx: true})
+	a, _, _ := newPrintAgent(t, agenttest.Turn{WaitCtx: true})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { a.Abort() }() // races the run start; cancel ctx as backstop
 	go cancel()
 	var out strings.Builder
-	code := RunPrint(ctx, PrintDeps{Agent: a, Store: store, Out: &out, ErrOut: &strings.Builder{}},
+	code := RunPrint(ctx, PrintDeps{Agent: a, Out: &out, ErrOut: &strings.Builder{}},
 		PrintOptions{Prompt: "long task"})
 	if code != ExitSIGINT {
 		t.Fatalf("exit = %d, want %d", code, ExitSIGINT)

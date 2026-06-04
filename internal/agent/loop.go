@@ -58,6 +58,7 @@ func runLoop(ctx context.Context, d *loopDeps, history []AgentMessage, initial [
 	record := func(m AgentMessage) {
 		msgs = append(msgs, m)
 		newMsgs = append(newMsgs, m)
+		d.Hooks.onMessage(m)
 	}
 	inject := func(batch []AgentMessage) {
 		for _, m := range batch {
@@ -120,6 +121,10 @@ func runLoop(ctx context.Context, d *loopDeps, history []AgentMessage, initial [
 				return end(EndAborted)
 			}
 
+			// [COMPACT?] post-turn context-management trigger; runs while the
+			// session is quiescent so a compaction never races a stream.
+			d.Hooks.afterTurn(ctx, d.Log, turn)
+
 			// [HOOKS] PrepareNextTurn may swap model/thinking; ShouldStop
 			// ends the run cleanly.
 			if upd := d.Hooks.prepareNextTurn(turn); upd != nil {
@@ -152,10 +157,12 @@ func runLoop(ctx context.Context, d *loopDeps, history []AgentMessage, initial [
 // projection → provider stream, retrying transient failures with backoff.
 // ok=false means the turn ended in error/abort and the run must stop.
 // Streams that already emitted content are never retried (re-running would
-// duplicate text); overflow errors are not retryable here — the compaction
-// path owns them once context management lands.
+// duplicate text). A context-overflow error gets one recovery attempt: the
+// failed message is dropped and the OnContextOverflow hook may free room
+// (compaction) before the request is rebuilt.
 func streamTurn(ctx context.Context, d *loopDeps, msgs []AgentMessage, model ai.Model, opts ai.StreamOptions) (ai.AssistantMessage, bool) {
 	attempt := 0
+	overflowRetried := false
 	for {
 		transformed := d.Hooks.transformContext(ctx, d.Log, msgs)
 		llmCtx := ai.Context{
@@ -177,6 +184,14 @@ func streamTurn(ctx context.Context, d *loopDeps, msgs []AgentMessage, model ai.
 		}
 
 		class := classifyError(final.ErrorMessage)
+		if class == classOverflow && !emittedContent && !overflowRetried {
+			overflowRetried = true
+			if d.Hooks.onContextOverflow(ctx) {
+				// Context was freed; rebuild and retry once. The failed
+				// message is local to this call and simply discarded.
+				continue
+			}
+		}
 		retryable := class == classRetryable && !emittedContent
 		if !retryable || attempt >= retryMaxAttempts {
 			if attempt > 0 {

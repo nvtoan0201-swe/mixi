@@ -13,6 +13,7 @@ type writeTool struct {
 	cwd   string
 	fsync bool
 	mq    *mutQueue
+	obs   FileObserver
 }
 
 func (t *writeTool) Name() string { return "write" }
@@ -49,6 +50,7 @@ func (t *writeTool) Execute(ctx context.Context, args json.RawMessage, _ chan<- 
 	if err := atomicWrite(path, []byte(a.Content), t.fsync); err != nil {
 		return ToolResult{}, fmt.Errorf("write %s: %w", a.Path, err)
 	}
+	observeWrite(t.obs, path, []byte(a.Content))
 	return Text(fmt.Sprintf("Successfully wrote %d bytes to %s", len(a.Content), a.Path)), nil
 }
 

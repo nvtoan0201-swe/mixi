@@ -5,12 +5,35 @@ import (
 	"path/filepath"
 )
 
+// FileObserver receives every successful file read and write so the harness
+// can track file freshness (working set). Implementations must be safe for
+// concurrent use: read/write/edit run in parallel batches.
+type FileObserver interface {
+	ObserveRead(path string, data []byte)
+	ObserveWrite(path string, data []byte)
+}
+
 // Options configures the built-in tool set.
 type Options struct {
 	// Cwd anchors relative tool paths; empty means the process working dir.
 	Cwd string
 	// Fsync forces fsync after file writes (config files.fsync, default off).
 	Fsync bool
+	// Observer, when non-nil, is notified of successful reads and writes.
+	Observer FileObserver
+}
+
+// observeRead forwards to the observer when one is configured.
+func observeRead(o FileObserver, path string, data []byte) {
+	if o != nil {
+		o.ObserveRead(path, data)
+	}
+}
+
+func observeWrite(o FileObserver, path string, data []byte) {
+	if o != nil {
+		o.ObserveWrite(path, data)
+	}
 }
 
 // RegisterBuiltins adds the nine built-in tools to r and returns the shared
@@ -25,9 +48,9 @@ func RegisterBuiltins(r *Registry, opts Options) (*JobTable, error) {
 	mq := newMutQueue()
 	jobs := NewJobTable()
 	all := []Tool{
-		&readTool{cwd: cwd},
-		&writeTool{cwd: cwd, fsync: opts.Fsync, mq: mq},
-		&editTool{cwd: cwd, mq: mq},
+		&readTool{cwd: cwd, obs: opts.Observer},
+		&writeTool{cwd: cwd, fsync: opts.Fsync, mq: mq, obs: opts.Observer},
+		&editTool{cwd: cwd, mq: mq, obs: opts.Observer},
 		&bashTool{cwd: cwd, jobs: jobs},
 		&bashOutputTool{jobs: jobs},
 		&killBashTool{jobs: jobs},
