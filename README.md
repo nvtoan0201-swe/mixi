@@ -83,7 +83,23 @@ go build ./...
 go test -race ./...
 ```
 
-> **Note:** the `mixi` CLI binary is not wired up yet — the current codebase ships the core packages (provider, agent loop, tools, sessions). The end-to-end CLI lands next on the roadmap.
+### Run (print mode)
+
+```bash
+go build -o mixi ./cmd/mixi
+
+# Live smoke test against the Anthropic API:
+ANTHROPIC_API_KEY=sk-... ./mixi -p "create hello.txt containing hi"
+cat hello.txt   # → hi; session JSONL lands under ~/.mixi/sessions/
+
+# JSONL event stream, piped prompt, follow-ups:
+echo "what does this repo do?" | ./mixi --output json
+./mixi -p "list the Go files" --message "now count them" --print-stats
+```
+
+Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`. Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
+
+> **Note:** the permission engine is not wired up yet — print mode currently runs every tool call unrestricted and prints a warning banner. Interactive TUI, RPC, and MCP land in later phases.
 
 ## Design Highlights
 
@@ -96,12 +112,15 @@ go test -race ./...
 
 ```
 mixi-agent/
+├── cmd/mixi/          # CLI entry point (print mode, signals, session wiring)
 ├── internal/
-│   ├── ai/            # core types, provider registry, anthropic, sse, partialjson
+│   ├── ai/            # core types, provider registry, anthropic, faux, sse, partialjson
 │   ├── agent/         # runtime loop, events, queues, hooks
 │   ├── schema/        # JSON-Schema validation & coercion
 │   ├── tools/         # built-in tools
-│   └── session/       # JSONL tree session storage
+│   ├── session/       # JSONL tree session storage
+│   ├── config/        # settings files, flags, precedence resolution
+│   └── modes/         # print mode + EventSink (text / JSONL)
 ├── docs/              # codebase summary, changelog, journals
 ├── scripts/           # development utilities
 └── plans/             # implementation plans (local)
@@ -110,6 +129,7 @@ mixi-agent/
 ## Development
 
 - `go test -race ./...` must stay green
+- End-to-end CLI tests run offline: `--model faux/scripted` replays JSON-scripted turns from `MIXI_FAUX_SCRIPT` (see `cmd/mixi/e2e_test.go`); the live Anthropic call above is a manual smoke only
 - Files stay under ~200 lines where practical; snake_case filenames
 - Conventional commits (`feat:`, `fix:`, `docs:`, …)
 

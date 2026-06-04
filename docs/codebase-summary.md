@@ -1,22 +1,36 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 6 complete (session persistence with JSONL tree storage)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 7 complete (CLI & print mode E2E)
 
 ## Package Overview
 
 | Package | Purpose | Key Types |
 |---------|---------|-----------|
+| `cmd/mixi` | CLI entry point: flag parsing, settings precedence, session open, tool wiring, signal handling, mode dispatch | `Flags`, `RuntimeConfig`, `realMain`, signal handlers |
 | `internal/ai` | Normalized type system for all providers; provider registry | `Content`, `Message`, `StreamEvent`, `Model`, `Provider` |
 | `internal/ai/anthropic` | Anthropic API provider (SSE streaming, thinking, retries) | `Provider`, `BlockTracker`, SSE event mapping |
+| `internal/ai/faux` | Scripted provider for E2E testing (always compiled); replays JSON script via `MIXI_FAUX_SCRIPT` env | `provider`, `Script`, `ScriptTurn` |
 | `internal/ai/sse` | Server-Sent Events decoder | `Decoder` |
 | `internal/ai/partialjson` | Streaming partial JSON repair | `RepairContext` |
 | `internal/agent` | Two-level runtime loop: turns, tool dispatch, queues, retry, events | `Agent`, `runLoop`, `Event` (sealed union) |
 | `internal/agent/agenttest` | Scripted test provider (fake stream generator) | `FakeProvider` |
+| `internal/config` | Settings files + CLI flags with precedence resolution; runtime config assembly | `Settings`, `Flags`, `RuntimeConfig`, `Resolve` |
+| `internal/modes` | Headless run modes (print now; RPC/replay stubbed); EventSink abstraction | `EventSink`, `TextSink`, `JSONSink`, `RunPrint` |
 | `internal/schema` | JSON-Schema validation, coercion, LLM-readable errors | `Compile`, `Coerce`, `ErrFormatter` |
 | `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup) | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
 | `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
 
 ## Architecture Layers
+
+### Layer 0: CLI & Mode Dispatch (`cmd/mixi`, `internal/config`, `internal/modes`)
+- **CLI entry point** (`main.go`): parses args, detects piped stdin, resolves config, opens session, dispatches to mode
+- **Flag parsing** (`internal/config/flags.go`): stdlib flag.FlagSet with repeatable flags (--message, --allow, --deny), WasSet tracking for precedence
+- **Settings merging** (`internal/config/config.go`): JSON load from ~/.mixi/settings.json, .mixi/settings.json (cwd), and --config file; deny lists append-only across layers; ${ENV} brace-only expansion
+- **Precedence resolution** (`internal/config/runtime.go`): Resolve(flags, settings, cwd, stdin) → RuntimeConfig with flags > settings > defaults; special-case faux/scripted model via config.ResolveModel
+- **Print mode** (`internal/modes/print.go`): subscribe to agent events, persist per-event to session storage, fan-out to EventSink (text or JSONL), queue follow-ups, emit exit codes (0/1/2/130)
+- **EventSink abstraction** (`internal/modes/sink.go`, `sink_json.go`): TextSink (final assistant text to stdout, errors to stderr), JSONSink (flattened JSONL per event)
+- **Signal handling** (`cmd/mixi/main.go`): SIGINT → graceful abort (exit 130), 2nd SIGINT/SIGTERM → cleanup + exit
+- **Session wiring** (`cmd/mixi/setup.go`): openSession per flags (fresh / -c / --resume / --fork / --no-save); historyFromSession seeds agent.History from active path
 
 ### Layer 1: Core Types (`internal/ai`)
 - **Sealed unions** (marker interfaces + JSON discriminators): `Content`, `Message`, `StreamEvent`
@@ -24,11 +38,9 @@
 - **Models:** global registry of known model IDs + defaults (claude-3.5-sonnet, gpt-4, etc.)
 - **No imports of other internal packages** — type system is self-contained
 
-### Layer 2: Provider Implementation (`internal/ai/anthropic`)
-- Converts Anthropic wire format → normalized `StreamEvent` order contract
-- Handles extended thinking (redacted_thinking), block tracking, content indexing
-- SSE decoder + partial JSON repair for streaming text/tool calls
-- Caches model metadata; retry hooks apply to API calls
+### Layer 2: Provider Implementation (`internal/ai/anthropic`, `internal/ai/faux`)
+- **Anthropic:** Converts Anthropic wire format → normalized `StreamEvent` order contract; handles extended thinking (redacted_thinking), block tracking, content indexing; SSE decoder + partial JSON repair for streaming text/tool calls; caches model metadata; retry hooks apply to API calls
+- **Faux (E2E test provider):** Scripted, always-compiled model `faux/scripted` replays turns from JSON file (MIXI_FAUX_SCRIPT env); per-process sync.Once load; delegates playback to agenttest.Provider for identical wire behavior to unit tests; used in cmd/mixi E2E suite for SIGINT testing and subprocess re-exec patterns
 
 ### Layer 3: Agent Runtime (`internal/agent`)
 - **Two-level loop structure:**
@@ -130,14 +142,28 @@
 
 ## Test Coverage
 
-- **45 test files** across all packages
-- **147+ passing tests** (agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager)
+- **50+ test files** across all packages
+- **279 passing tests** (CLI E2E: 6 tests incl. SIGINT abort + signal handling; config: flags + merging + resolution; modes: print/JSON/follow-ups/stats; faux: scripted provider; agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager)
 - **6 env-skips:** rg/fd absent on test machine (error paths covered via fake lookPath)
-- **Coverage:** 86.6% (tools + session packages)
-- **Race detector:** green (-count=5 stable; no data races detected)
+- **Coverage:** 86.6% (tools + session packages); CLI E2E coverage zero-flakes across 145 test executions
+- **Race detector:** green (-race -count=5 stable; no data races detected)
 - **Goleak:** green (no goroutine leaks)
 
 ## Key Files
+
+### CLI & Configuration (500+ LOC)
+- `cmd/mixi/main.go` (CLI entry, realMain, signal handling, mode dispatch)
+- `cmd/mixi/setup.go` (openSession, historyFromSession, systemPrompt, streamOpts resolution)
+- `cmd/mixi/e2e_test.go` (subprocess re-exec E2E pattern)
+- `cmd/mixi/e2e_runner_test.go` (E2E runner with signal injection)
+- `internal/config/config.go` (Settings struct, JSON load+merge, ${ENV} expansion, deny lists append-only)
+- `internal/config/flags.go` (stdlib flag, repeatable flags, WasSet tracking)
+- `internal/config/runtime.go` (Resolve precedence, ResolveModel incl. faux/scripted special case)
+- `internal/modes/sink.go` (EventSink interface, TextSink: assistant text → stdout, errors → stderr)
+- `internal/modes/sink_json.go` (JSONSink: flattened JSONL event records)
+- `internal/modes/print.go` (RunPrint: subscribe, persist-per-event, sink fan-out, follow-up queueing, usage stats, exit codes)
+- `internal/ai/faux/faux.go` (scripted provider, sync.Once load, script playback)
+- 6 E2E tests: SIGINT abort (exit 130), 2nd SIGINT cleanup, tool call write+persist, JSON JSONL output, follow-ups+stats, stdin pipe implies print mode, usage error exit codes
 
 ### Built-in Tools (1,500+ LOC)
 - `truncate.go` (head/tail truncation, UTF-8 boundaries)
@@ -215,6 +241,7 @@ SequentialTools bool               // Default: false (parallel)
 SteerDrain   DrainMode             // Default: DrainAll
 Stream       StreamFunc            // Default: registryStream (provider lookup)
 Log          *slog.Logger          // Default: slog.Default()
+History      []AgentMessage        // Default: nil (session resume seeding, Phase 7)
 ```
 
 ## Concurrency Model

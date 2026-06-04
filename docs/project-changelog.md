@@ -143,3 +143,51 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - Windows cross-vet clean
 
 **Summary:** Session storage layer complete. Multi-turn conversation history now persists to disk with crash recovery, branching support, and concurrent access safety. All six phases (1–5: agent runtime + built-in tools, 6: session persistence) on schedule.
+
+## Phase 7: CLI & Print Mode E2E (2026-06-04)
+
+### Four New Packages
+
+#### `cmd/mixi` (CLI Entry Point)
+- Implement realMain: flag parsing, config resolution, session open, tool wiring, mode dispatch
+- Settings precedence: flags > --config > .mixi/settings.json > ~/.mixi/settings.json > defaults
+- Session open per flags: fresh (default), -c/--continue (most recent), --resume/-fork (specific id/path), --no-save (in-memory)
+- Tool registry wiring + signal handling (SIGINT → graceful abort exit 130; 2nd SIGINT/SIGTERM → cleanup)
+- Mode dispatch: print mode live; TUI/RPC/replay stubbed "not yet available"
+- API-key-from-env hooks (ANTHROPIC_API_KEY, OPENAI_API_KEY)
+
+#### `internal/config` (Settings & Flags)
+- Settings struct: model, permissions, compaction, files, mcpServers, extensions
+- JSON load+merge across layers (global, project, extra); deny lists append-only
+- ${ENV} brace-only expansion (e.g., ${ANTHROPIC_API_KEY})
+- Flag parsing: stdlib flag, repeatable flags (--message, --allow, --deny), WasSet tracking
+- RuntimeConfig.Resolve: precedence logic (flags > settings > defaults); ResolveModel handles faux/scripted special case
+
+#### `internal/modes` (Headless Run Modes)
+- EventSink interface: abstract emission point for all agents events
+- TextSink: final assistant text → stdout, errors → stderr
+- JSONSink: flattened JSONL event records (one line per event)
+- RunPrint: subscribe to agent, persist-per-event to session storage, fan-out to sink, queue follow-ups, print usage stats on request, exit codes (0/1/2/130)
+
+#### `internal/ai/faux` (E2E Test Provider)
+- Scripted, always-compiled provider (model faux/scripted)
+- JSON script via MIXI_FAUX_SCRIPT env; sync.Once per-process load
+- Delegates playback to agenttest.Provider for identical wire behavior to unit tests
+- Enables E2E testing of CLI without network access or flaky provider calls
+
+### Test Results & Quality
+- 6 E2E tests in cmd/mixi (subprocess re-exec pattern): SIGINT abort (exit 130), 2nd SIGINT cleanup, tool call write+persist, JSON output JSONL, follow-ups+stats, stdin pipe implies print mode, usage error exit codes (exit 2)
+- 30 tests across config/modes/faux packages
+- **279 total tests** project-wide
+- **145 test executions** in E2E suite; zero flakes, race-clean
+- No critical review issues; M1 slow-consumer edge deferred to phase 16
+
+### Key Deliverables
+- First end-to-end binary: `mixi -p "prompt"` with live Anthropic calls
+- Print mode text output (final assistant text) and --output json (JSONL event stream)
+- --session-dir, --resume/-c/--fork for multi-turn conversations
+- Usage/stats summaries with --print-stats
+- README CLI usage guide + live smoke docs
+- E2E test suite covers signal handling, session persistence, and tool calls
+
+**Summary:** First end-to-end binary shipped. Print mode fully functional with settings, flags, session persistence, and signal handling. CLI architecture ready for permission engine, TUI, and RPC modes (phases 8+).
