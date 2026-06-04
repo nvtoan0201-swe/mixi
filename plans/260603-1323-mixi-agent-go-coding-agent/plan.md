@@ -29,7 +29,7 @@ Note: old `internal/ai` skeleton (commit `add2cf0`) was intentionally reset; its
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | [AI Core Types & Streaming](./phase-01-ai-core-types-streaming.md) | ✅ Complete (260603) |
-| 2 | [Anthropic Provider](./phase-02-anthropic-provider.md) | Pending |
+| 2 | [Anthropic Provider](./phase-02-anthropic-provider.md) | ✅ Complete (260604, live smoke deferred — no API key) |
 | 3 | [Schema Validation](./phase-03-schema-validation.md) | Pending |
 | 4 | [Agent Runtime Loop](./phase-04-agent-runtime-loop.md) | Pending |
 | 5 | [Built-in Tools](./phase-05-built-in-tools.md) | Pending |
