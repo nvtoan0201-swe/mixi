@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 4 complete (agent runtime loop + tools interface)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 5 complete (nine built-in tools + shared infra)
 
 ## Package Overview
 
@@ -13,7 +13,7 @@
 | `internal/agent` | Two-level runtime loop: turns, tool dispatch, queues, retry, events | `Agent`, `runLoop`, `Event` (sealed union) |
 | `internal/agent/agenttest` | Scripted test provider (fake stream generator) | `FakeProvider` |
 | `internal/schema` | JSON-Schema validation, coercion, LLM-readable errors | `Compile`, `Coerce`, `ErrFormatter` |
-| `internal/tools` | Tool interface, registry, execution dispatch | `Tool`, `Registry`, `ToolResult` |
+| `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup) | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
 
 ## Architecture Layers
 
@@ -49,11 +49,51 @@
 - **Tool execution:** parallel by default, sequential if any tool declares `ExecSequential` or config forces it
 - **Panic recovery:** tool panics → error result, run continues
 
-### Layer 4: Tool Interface (`internal/tools`)
+### Layer 4: Built-in Tools (`internal/tools`)
+
+**Core Interface & Registry**
 - `Tool` interface: `Name()`, `Description()`, `Schema()`, `Mode()`, `Execute()`
-- `Registry`: name-keyed, build-once, read-safe
+- `Registry`: name-keyed, build-once, read-safe; `RegisterBuiltins()` returns `*JobTable` for agent shutdown
 - `ToolResult`: content blocks (text/image) + metadata (Details, IsError)
-- `ToolUpdate`: streaming updates from long-running tools (non-blocking send via select+default)
+- `ToolUpdate`: streaming updates from long-running tools (non-blocking via select+default)
+
+**Nine Built-in Tools**
+| Tool | Mode | Behavior |
+|------|------|----------|
+| `read` | Parallel | Files: 1-indexed offset/limit, head-truncate (max 2000 lines, 50 KiB), line-numbered; images: sniff PNG/JPEG/GIF/WebP, downscale >2000px via stdlib draw |
+| `write` | Parallel | Atomic write: mkdir-p parent, temp file + rename; per-realpath mutex (mutqueue), optional fsync |
+| `edit` | Parallel | Fuzzy-match file (NFKC normalize, trailing-ws strip, smart quotes/dashes/spaces), apply to whole file, preserve CRLF/BOM; closest-line hint on no-match |
+| `bash` | Sequential | Exec `$SHELL -c` with Setpgid (Unix process group; Windows stub); interleaved stdout+stderr, rolling-tail accumulator (spill >100 KiB to temp file); 100ms throttled updates; timeout SIGTERM→2s grace→SIGKILL group |
+| `bash_output` | Parallel | Read cursor position from background job; no-op if job finished |
+| `kill_bash` | Parallel | Terminate background job (SIGTERM→2s→SIGKILL group) |
+| `grep` | Parallel | Ripgrep (rg) required on PATH; JSON-lines mode, clip lines to 500 bytes, max 2000 results; install-hint error if rg absent |
+| `find` | Parallel | Prefers fd (respects .gitignore); fallback: pure-Go WalkDir + doublestar glob, no .gitignore (note: "[fd not found: .gitignore not respected]"), max 2000 results |
+| `ls` | Parallel | Pure Go: os.ReadDir, limit 2000 entries |
+
+**Shared Infrastructure**
+- **truncate.go**: Head-truncate (keep lines until max-lines or max-bytes), tail-truncate (last N lines), UTF-8-safe boundary handling
+- **accumulator.go**: Rolling-tail buffer (2×MaxBytes in memory); lazy spill to temp file; cursor reads for bash output streaming
+- **job_table.go**: Background job registry (b1, b2, ...) for bash background=true; KillAll for agent shutdown
+- **mutqueue.go**: Per-realpath mutex pool with refcount cleanup; serializes edits/writes to same file, parallels different files
+- **bintools.go**: lookPath wrapper; per-OS rg/fd install hints (install-hint error vs auto-download)
+- **procgroup_unix.go/procgroup_windows.go**: Unix Setpgid group kill (SIGTERM→2s→SIGKILL); Windows best-effort PID kill
+- **read_image.go**: Magic-byte sniff (PNG, JPEG, GIF, WebP); downscale >2000² via x/image/draw
+- **editmatch.go**: NFKC + smart-quote/dash/space normalization table; exact→fuzzy match; Sørensen–Dice distance for closest-line hint
+- **edit_details.go**: UI metadata (diff, patch, firstChangedLine); never sent to LLM
+
+**Constants (Pi-compatible)**
+- `MaxLines = 2000` — max lines per tool result
+- `MaxBytes = 50 KiB` — max bytes per result
+- `GrepMaxLineLen = 500` — clip individual grep lines
+- `BashUpdateThrottle = 100ms` — min interval between streamed updates
+- `BashDefaultTimeout = 120s`, `BashMaxTimeout = 600s`
+
+**Key Semantics**
+- **Edit fuzzy-match:** Normalizes entire file content; if any edit needs fuzzy (not exact), rewrites whole file to normalized form
+- **Bash sequential:** Even if no tool declares ExecSequential, bash forces sequential (one-at-a-time) to guarantee output ordering
+- **Process-group kill:** Unix only (syscall.SysProcAttr{Setpgid}); Windows: best-effort PID kill (no true group termination)
+- **Grep required:** rg must be on PATH; no fallback, no auto-download (install-hint error)
+- **Find fallback:** fd absent → pure-Go WalkDir+doublestar, output note warns .gitignore not respected
 
 ### Layer 5: Schema Validation (`internal/schema`)
 - **Compile:** JSON Schema → validator, rejects unknown keywords
@@ -78,12 +118,31 @@
 
 ## Test Coverage
 
-- **25 test files** across all packages
-- **68+ passing tests** (agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion)
+- **38 test files** across all packages
+- **109+ passing tests** (agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools)
+- **6 env-skips:** rg/fd absent on test machine (error paths covered via fake lookPath)
+- **Coverage:** 81.9% (tools package)
 - **Race detector:** green (no data races detected)
 - **Goleak:** green (no goroutine leaks)
 
 ## Key Files
+
+### Built-in Tools (1,500+ LOC)
+- `truncate.go` (head/tail truncation, UTF-8 boundaries)
+- `accumulator.go` (rolling-tail buffer, temp-file spill, cursor reads)
+- `job_table.go` (background job registry, shutdown KillAll)
+- `mutqueue.go` (per-realpath mutex pool, refcount cleanup)
+- `bintools.go` (lookPath wrapper, install-hint errors)
+- `procgroup_unix.go` / `procgroup_windows.go` (process-group kill strategies)
+- `read.go` / `read_image.go` (file/image read, sniff, downscale)
+- `write.go` (atomic write, temp+rename, fsync)
+- `edit.go` / `editmatch.go` / `edit_details.go` (fuzzy match, normalization table, diff/patch metadata)
+- `bash.go` / `bash_bg.go` (shell exec, interleaved output, job lifecycle, timeout)
+- `grep.go` (ripgrep wrapper, JSON-lines parse)
+- `find.go` (fd preferred, pure-Go WalkDir fallback, doublestar glob)
+- `ls.go` (pure-Go directory listing)
+- `builtins.go` (RegisterBuiltins entry point)
+- 13 test files: 65 passing, 6 env-skips (rg/fd absent), 81.9% coverage, race green
 
 ### Agent Runtime (3,000+ LOC)
 - `agent.go` (Config, Agent type, New, Prompt/Continue/Subscribe methods)
@@ -149,9 +208,19 @@ Log          *slog.Logger          // Default: slog.Default()
 4. **Hooks:** called at transform context / get API key / before/after tool call / should stop checkpoints
 5. **Logging:** structured logs to Config.Log
 
+## Dependencies
+
+**Direct (Phase 5 additions):**
+- `github.com/bmatcuk/doublestar/v4` — glob matching for find.go WalkDir fallback
+- `golang.org/x/image` (draw, webp) — image downscale, WebP decode for read_image.go
+
+**Existing:**
+- Standard library: context, encoding/json, io, os, syscall, time, etc.
+
 ## Stability Notes
 
 - **Backward compatibility:** all wire types (ai.Message) are versioned and can evolve via new discriminator values
 - **Extension points:** Tool interface is stable; new tool types registered at startup
 - **Provider evolution:** new providers register themselves; existing logic unaffected
 - **Schema validation:** coercion is conservative (promote types safely, omit bad fields rather than fail)
+- **Built-in tools:** semantics frozen in tool descriptions (edit whole-file rewrite on fuzzy, bash sequential, grep requires rg, find falls back to pure-Go)

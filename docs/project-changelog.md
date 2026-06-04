@@ -35,7 +35,7 @@
 - Add validation tests: coerce edge cases, error messages, schema compilation
 - 6 tests, all passing
 
-## Phase 4: Agent Runtime Loop & Tools Interface (Commit pending, today 2026-06-04)
+## Phase 4: Agent Runtime Loop & Tools Interface (Commit b0ae628, 2026-06-03)
 
 ### Agent Runtime (`internal/agent`)
 - Implement two-level agent loop: outer (follow-ups extend run) and inner (stream turn, dispatch tools, retry)
@@ -79,4 +79,43 @@ ok  github.com/user/mixi-agent/internal/ai/partialjson 0.0s (2 tests)
 PASS: race detector, goleak
 ```
 
-All phases (1–4) delivered on schedule. Foundation complete for permission/session/extension layers (Phase 5+).
+## Phase 5: Built-in Tools (Commit pending, today 2026-06-04)
+
+### Nine Built-in Tools
+- Implement `read` (file + image read; sniff PNG/JPEG/GIF/WebP, downscale >2000px)
+- Implement `write` (atomic temp+rename, per-realpath mutex, optional fsync)
+- Implement `edit` (fuzzy-match file, NFKC normalization, smart quotes/dashes/spaces table, whole-file rewrite on fuzzy, closest-line hint)
+- Implement `bash` (Setpgid process groups, interleaved stdout+stderr, 100ms throttled updates, timeout SIGTERM→2s→SIGKILL)
+- Implement `bash_output` (cursor reads from background job accumulator)
+- Implement `kill_bash` (terminate background job)
+- Implement `grep` (ripgrep wrapper, JSON-lines parse, rg required on PATH)
+- Implement `find` (fd preferred + .gitignore respect; fallback: pure-Go WalkDir+doublestar+no-.gitignore note)
+- Implement `ls` (pure-Go os.ReadDir)
+
+### Shared Infrastructure
+- Add `truncate.go`: head/tail truncation, UTF-8-safe boundaries
+- Add `accumulator.go`: rolling-tail buffer (2×MaxBytes memory), lazy spill to temp file, cursor reads
+- Add `job_table.go`: background job registry (b1, b2, ...), KillAll for agent shutdown
+- Add `mutqueue.go`: per-realpath mutex pool, refcount cleanup
+- Add `bintools.go`: lookPath wrapper, per-OS install-hint errors (no auto-download)
+- Add `procgroup_unix.go` / `procgroup_windows.go`: Unix Setpgid group kill, Windows best-effort PID kill
+- Add `read_image.go`: magic-byte sniff, downscale via x/image/draw
+- Add `editmatch.go`: NFKC + smart-quote/dash/space normalization, exact→fuzzy match, Sørensen–Dice distance
+- Add `edit_details.go`: UI metadata (diff, patch, firstChangedLine)
+
+### Constants & Semantics
+- Constants: MaxLines=2000, MaxBytes=50 KiB, GrepMaxLineLen=500, BashUpdateThrottle=100ms, BashDefaultTimeout=120s, BashMaxTimeout=600s
+- Edit fuzzy-match: normalizes entire file; if any edit needs fuzzy, rewrites whole file
+- Bash sequential: forces one-at-a-time execution to guarantee output ordering
+- Process-group kill: Unix only (syscall.SysProcAttr{Setpgid}); Windows: best-effort PID kill
+- Grep required: rg must be on PATH (install-hint error on absence)
+- Find fallback: fd absent → pure-Go WalkDir+doublestar, outputs note "[fd not found: .gitignore not respected]"
+
+### Test Results & Quality
+- 20 source files + 13 test files in `internal/tools/` (builtins.go, tool.go, truncate.go, accumulator.go, job_table.go, mutqueue.go, bintools.go, procgroup_unix.go, procgroup_windows.go, read.go, read_image.go, write.go, edit.go, editmatch.go, edit_details.go, bash.go, bash_bg.go, grep.go, find.go, ls.go)
+- 65 passing tests, 6 env-skips (rg/fd absent)
+- 81.9% coverage, race detector green, goleak green
+- Review fixes: Job.cursor race fix, exactly-limit truncation note, go mod tidy
+- New deps: bmatcuk/doublestar/v4, golang.org/x/image (draw, webp)
+
+All phases (1–5) delivered on schedule. Built-in tool suite complete for agentic file/command access. Foundation ready for permission/session/extension layers (Phase 6+).
