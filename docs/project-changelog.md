@@ -119,3 +119,27 @@ PASS: race detector, goleak
 - New deps: bmatcuk/doublestar/v4, golang.org/x/image (draw, webp)
 
 All phases (1–5) delivered on schedule. Built-in tool suite complete for agentic file/command access. Foundation ready for permission/session/extension layers (Phase 6+).
+
+## Phase 6: Session Persistence (2026-06-04)
+
+### Session Storage Package (`internal/session`)
+- Implement append-only JSONL tree storage with Header (v1) + 11 entry types
+- Entry types: message[pinned], model_change, thinking_level_change, active_tools_change, compaction, branch_summary, custom, custom_message, label, session_info, leaf
+- Type-discriminated codec delegating message payloads to ai.MarshalMessage/UnmarshalMessage
+- Implement Storage interface with two impls: jsonlStore (disk) and memStore (tests/--no-save)
+- Deferred first write: no file/lock until first message entry; empty sessions leave zero artifacts
+- Add O_APPEND handle + optional fsync per message entry
+- Implement file locking: flock(LOCK_EX|LOCK_NB) on Unix + LockFileEx on Windows (x/sys, untested); pid-hint sidecar
+- Build Loader with stream-scan, 10 MiB line cap, crash-tail recovery (WARN + truncate partial trailing; never truncate without valid header); reject version>1 with upgrade hint
+- Implement tree operations: byId index + leaf replay; PathToRoot, SetLeaf, CommonAncestor, fork (file-order prefix + parentSession header)
+- Build Manager: ~/.mixi/sessions/<cwd-slug>/<ts>_<uuidv7>.jsonl; Create/Open/ContinueRecent(newest mtime)/Fork/InMemory
+- Entry IDs: last-8-hex of uuidv7 (deliberate deviation from first-8 to avoid timestamp-prefix collisions); ≤100 retries; full-uuid fallback
+- New deps: github.com/google/uuid, golang.org/x/sys (windows-only)
+
+### Test Results & Quality
+- 11 source files + 8 test files in `internal/session/`
+- 38 passing tests, -race -count=5 stable
+- 86.6% coverage across tools + session packages
+- Windows cross-vet clean
+
+**Summary:** Session storage layer complete. Multi-turn conversation history now persists to disk with crash recovery, branching support, and concurrent access safety. All six phases (1–5: agent runtime + built-in tools, 6: session persistence) on schedule.

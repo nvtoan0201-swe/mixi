@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 5 complete (nine built-in tools + shared infra)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 6 complete (session persistence with JSONL tree storage)
 
 ## Package Overview
 
@@ -14,6 +14,7 @@
 | `internal/agent/agenttest` | Scripted test provider (fake stream generator) | `FakeProvider` |
 | `internal/schema` | JSON-Schema validation, coercion, LLM-readable errors | `Compile`, `Coerce`, `ErrFormatter` |
 | `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup) | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
+| `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
 
 ## Architecture Layers
 
@@ -100,6 +101,17 @@
 - **Coerce:** type promotion (string→number, null→empty string), unsets bad fields
 - **ErrFmt:** LLM-readable validation errors (no internal stack traces)
 
+### Layer 6: Session Persistence (`internal/session`)
+- **JSONL tree storage:** Header (v1) + discriminated entry types (11 total: message[pinned], model_change, thinking_level_change, active_tools_change, compaction, branch_summary, custom, custom_message, label, session_info, leaf)
+- **Entry codec:** type-discriminated JSON with message payloads delegated to ai.MarshalMessage/UnmarshalMessage
+- **Storage interface:** Header/Append/Get/PathToRoot/LeafID/SetLeaf/Entries/Close with two impls (jsonlStore on disk, memStore for tests/--no-save)
+- **Deferred first write:** no file/lock until first message entry; empty sessions leave zero disk artifacts
+- **File locking:** flock(LOCK_EX|LOCK_NB) on Unix + LockFileEx on Windows (x/sys); optional fsync per entry; pid-hint sidecar
+- **Crash recovery:** stream-scan loader with 10 MiB line cap; warns + truncates partial trailing line; never truncates without valid header; rejects version>1 with upgrade hint
+- **Tree operations:** byId index + leaf replay; PathToRoot, SetLeaf, CommonAncestor, fork (file-order prefix copy + parentSession header)
+- **Manager:** ~/.mixi/sessions/<cwd-slug>/<ts>_<uuidv7>.jsonl; Create/Open/ContinueRecent(newest mtime)/Fork/InMemory
+- **Entry IDs:** last-8-hex of uuidv7 (deliberate timestamp-prefix deviation to avoid collisions); ≤100 retries; full-uuid fallback
+
 ## Message Flow
 
 1. **User calls `Agent.Prompt(context, message)`**
@@ -118,11 +130,11 @@
 
 ## Test Coverage
 
-- **38 test files** across all packages
-- **109+ passing tests** (agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools)
+- **45 test files** across all packages
+- **147+ passing tests** (agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager)
 - **6 env-skips:** rg/fd absent on test machine (error paths covered via fake lookPath)
-- **Coverage:** 81.9% (tools package)
-- **Race detector:** green (no data races detected)
+- **Coverage:** 86.6% (tools + session packages)
+- **Race detector:** green (-count=5 stable; no data races detected)
 - **Goleak:** green (no goroutine leaks)
 
 ## Key Files
@@ -143,6 +155,19 @@
 - `ls.go` (pure-Go directory listing)
 - `builtins.go` (RegisterBuiltins entry point)
 - 13 test files: 65 passing, 6 env-skips (rg/fd absent), 81.9% coverage, race green
+
+### Session Storage (2,250+ LOC)
+- `entry.go` (Header, Entry interface, 11 entry types)
+- `entry_json.go` (wire struct marshaling, discriminator routing)
+- `storage.go` (Storage interface definition)
+- `store.go` (jsonlStore: disk JSONL, deferred write, optional fsync)
+- `memstore.go` (in-memory store for tests)
+- `loader.go` (stream-scan, 10 MiB line cap, crash recovery, version check)
+- `lock.go` / `lock_windows.go` (flock/LockFileEx, pid-hint sidecar)
+- `manager.go` (Manager: session lifecycle, ~mixi/sessions/{cwd-slug}/{ts}_{id}.jsonl)
+- `tree.go` (byId index, PathToRoot, SetLeaf, CommonAncestor, fork)
+- `ids.go` (8-hex entry IDs from uuidv7, collision retry strategy)
+- 8 test files: 38 passing, -race -count=5 stable, 86.6% coverage
 
 ### Agent Runtime (3,000+ LOC)
 - `agent.go` (Config, Agent type, New, Prompt/Continue/Subscribe methods)
@@ -210,9 +235,11 @@ Log          *slog.Logger          // Default: slog.Default()
 
 ## Dependencies
 
-**Direct (Phase 5 additions):**
+**Direct (Phase 5–6 additions):**
 - `github.com/bmatcuk/doublestar/v4` — glob matching for find.go WalkDir fallback
 - `golang.org/x/image` (draw, webp) — image downscale, WebP decode for read_image.go
+- `github.com/google/uuid` — uuidv7 generation for session IDs (Phase 6)
+- `golang.org/x/sys` — Windows LockFileEx (Phase 6, untested best-effort)
 
 **Existing:**
 - Standard library: context, encoding/json, io, os, syscall, time, etc.
