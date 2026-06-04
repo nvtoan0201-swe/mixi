@@ -36,6 +36,9 @@ type Config struct {
 	// Stream overrides the provider lookup (tests inject scripted streams).
 	Stream StreamFunc
 	Log    *slog.Logger
+	// History seeds the conversation with messages from a resumed session;
+	// they are context for future runs, never re-emitted or re-persisted.
+	History []AgentMessage
 }
 
 // Agent owns the conversation state and run lifecycle around runLoop.
@@ -75,6 +78,7 @@ func New(cfg Config) *Agent {
 	return &Agent{
 		cfg:      cfg,
 		maxTurns: maxTurns,
+		messages: append([]AgentMessage(nil), cfg.History...),
 		steering: newBoundedQueue[AgentMessage](defaultQueueCap, cfg.SteerDrain),
 		followUp: newBoundedQueue[AgentMessage](defaultQueueCap, DrainAll),
 		bus:      newEventBus(log),
