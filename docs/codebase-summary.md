@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 7 complete (CLI & print mode E2E)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 8 complete (Compaction & Working Set)
 
 ## Package Overview
 
@@ -19,6 +19,8 @@
 | `internal/schema` | JSON-Schema validation, coercion, LLM-readable errors | `Compile`, `Coerce`, `ErrFormatter` |
 | `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup) | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
 | `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
+| `internal/compact` | Context compaction: usage-anchored token estimation, turn serialization, cut-point selection, LLM summarization, Compactor state machine | `Compactor`, `Controller`, `LLMSummarizer`, `Estimator` |
+| `internal/workset` | Working-set assembly: file-freshness tracking, context budgeting (trim→compact→error), custom-entry persistence | `WorkingSet`, `FileStamp`, `ContextBuilder` |
 
 ## Architecture Layers
 
@@ -124,29 +126,52 @@
 - **Manager:** ~/.mixi/sessions/<cwd-slug>/<ts>_<uuidv7>.jsonl; Create/Open/ContinueRecent(newest mtime)/Fork/InMemory
 - **Entry IDs:** last-8-hex of uuidv7 (deliberate timestamp-prefix deviation to avoid collisions); ≤100 retries; full-uuid fallback
 
+### Layer 7: Compaction & Working Set (`internal/compact`, `internal/workset`)
+
+**Compaction (`internal/compact`):**
+- **Token estimation:** usage-anchored (provider-reported tokens); falls back to chars/4 post-compaction until next provider call
+- **Serialization:** Pi-compatible turn serialization (messages + tool results); custom-entry file-list merge
+- **Cut-point selection:** never breaks at toolResult, splits on turn boundary (repeat window from previous firstKeptEntryId), merges split-turn second summary into first via `---` separator
+- **LLMSummarizer:** generation prompts per turn type (user/assistant/tool); conversation context for summarization
+- **Compactor:** state machine enforcing single-entry-per-success; guards against duplicate compaction
+- **Controller:** bridges agent loop ↔ session; synchronous persistence hook (OnMessage), 3 triggers (pre-flight once/turn, post-turn, overflow retry-once), pinned-entry survival mapping, workset persistence via custom{workingset} entry
+
+**Working Set (`internal/workset`):**
+- **FileStamp:** mtime+size fast-path, sha256 confirmation for unchanged files
+- **File-freshness tracking:** detects disk changes; "[system] Files changed on disk…" notice capped at 20 files
+- **ContextBuilder:** assembly pipeline (summary → pinned → kept history → staleness notice); budget-aware
+- **Budget pipeline:** trim old >1 KiB tool results (largest-first, outside last 2 turns) → compact once → hard error if overflow persists
+- **Custom-entry persistence:** WorkingSet saved as custom{workingset} in session for multi-turn freshness tracking
+- **Projection-only:** context assembly never mutates underlying storage
+
 ## Message Flow
 
 1. **User calls `Agent.Prompt(context, message)`**
    - Message queued to steering, run started if idle
-2. **runLoop pulls steering queue** → emit EvMessageStart/End → inject into history
-3. **Stream LLM** → receive AssistantMessage, emit EvMessageUpdate* (render-only)
-4. **Extract tool calls** from message
-5. **executeToolCalls:**
+2. **OnMessage hook (sync persistence)** → append to session, emit harness events (Phase 8)
+3. **runLoop pulls steering queue** → emit EvMessageStart/End → inject into history
+4. **Stream LLM** → receive AssistantMessage, emit EvMessageUpdate* (render-only)
+5. **Extract tool calls** from message
+6. **executeToolCalls:**
    - Parallel: start all calls, collect as each finishes (order: completion order in race)
    - Sequential: start one, collect, repeat (order: source order)
-6. **Emit EvToolStart/End** per call, emit EvToolUpdate* if tool streams
-7. **Emit EvTurnEnd** with full message + results
-8. **Check steering queue:** if new messages, loop back to step 2
-9. **Check follow-up queue:** if messages and no tool calls were made, continue one more turn
-10. **Emit EvAgentEnd** with all new messages + end reason (Done, MaxTurns, Error, Aborted)
+   - FileObserver records reads/writes/edits into working set (Phase 8)
+7. **Emit EvToolStart/End** per call, emit EvToolUpdate* if tool streams
+8. **Emit EvTurnEnd** with full message + results
+9. **AfterTurn hook (post-turn compaction trigger)** → if context > keepRecentTokens, attempt compact once (Phase 8)
+10. **Check steering queue:** if new messages, loop back to step 3
+11. **OnContextOverflow hook (overflow recovery)** → if context budget exceeded, compact + retry once (Phase 8)
+12. **Check follow-up queue:** if messages and no tool calls were made, continue one more turn
+13. **Emit EvAgentEnd** with all new messages + end reason (Done, MaxTurns, Error, Aborted)
 
 ## Test Coverage
 
 - **50+ test files** across all packages
-- **279 passing tests** (CLI E2E: 6 tests incl. SIGINT abort + signal handling; config: flags + merging + resolution; modes: print/JSON/follow-ups/stats; faux: scripted provider; agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager)
+- **Passing tests:** 279 baseline + 15 Phase 8 (compact 75.9%, workset 94.4% coverage) = 294 total
+- **Test scope:** CLI E2E: 6 tests incl. SIGINT abort + signal handling; config: flags + merging + resolution; modes: print/JSON/follow-ups/stats; faux: scripted provider; agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager, compaction/working-set
 - **6 env-skips:** rg/fd absent on test machine (error paths covered via fake lookPath)
-- **Coverage:** 86.6% (tools + session packages); CLI E2E coverage zero-flakes across 145 test executions
-- **Race detector:** green (-race -count=5 stable; no data races detected)
+- **Coverage:** all 15 packages pass `-race -count=1`; CLI E2E zero-flakes across 145+ test executions
+- **Race detector:** green (no data races detected)
 - **Goleak:** green (no goroutine leaks)
 
 ## Key Files
@@ -204,8 +229,24 @@
 - `queue.go` (boundedQueue, DrainAll/DrainOne modes)
 - `retry.go` (classifyError, retryDelay, jitter + retry-after)
 - `sysprompt.go` (BuildSystemPrompt, tool definitions, context file embedding)
-- `hooks.go` (Hooks interface, no-op defaults)
+- `hooks.go` (Hooks interface, OnMessage/AfterTurn/OnContextOverflow optional hooks, Notify for harness events)
 - `main_test.go` (test helpers, scripted stream runner)
+
+### Compaction (750+ LOC)
+- `estimator.go` (Estimator interface, UsageAnchoredEstimator, FallbackEstimator for post-compaction staleness)
+- `serializer.go` (Pi-compatible turn serialization, message+result encoding)
+- `cutter.go` (cut-point walk, never-at-toolResult rule, turn-boundary split, repeat-window resume)
+- `prompts.go` (4 ported summarization prompts for user/assistant/tool/mixed turns)
+- `summarizer.go` (LLMSummarizer integration, conversation context assembly)
+- `compactor.go` (Compactor state machine, single-entry-per-success guard, Controller bridge)
+- `controller.go` (session ↔ agent loop sync, 3 compaction triggers, pinned mapping, workset persistence)
+- 8+ tests: estimator anchor/fallback, cut-point logic, summary prompts, controller triggers
+
+### Working Set (450+ LOC)
+- `filestamp.go` (FileStamp mtime+size, sha256 confirm, stale detection)
+- `working_set.go` (WorkingSet custom-entry codec, file-list merge)
+- `context_builder.go` (ContextBuilder: summary→pinned→kept→staleness, trim→compact→error budget pipeline, projection-only)
+- 7+ tests: FileStamp staleness, budget pipeline, context assembly
 
 ### AI Layer (500+ LOC)
 - `types.go` (Content/Message/StreamEvent sealed unions, Model, Context)
@@ -229,7 +270,7 @@
 
 ## Configuration
 
-`Config` struct (agent.go):
+**Agent Config** (agent.go):
 ```go
 Model        ai.Model              // Required: model ID + provider
 Tools        *tools.Registry       // Default: empty registry
@@ -242,6 +283,18 @@ SteerDrain   DrainMode             // Default: DrainAll
 Stream       StreamFunc            // Default: registryStream (provider lookup)
 Log          *slog.Logger          // Default: slog.Default()
 History      []AgentMessage        // Default: nil (session resume seeding, Phase 7)
+```
+
+**Compaction Settings** (internal/config via ~/.mixi/settings.json):
+```
+compaction.disabled              // Kill-switch: bool (default: false)
+compaction.reserveTokens         // Minimum context budget kept free; default: 16384
+compaction.keepRecentTokens      // Soft limit on working set; default: 20000
+```
+
+**Tool Observer** (tools.Options):
+```go
+Observer     FileObserver          // Optional: tracks read/write/edit operations into working set
 ```
 
 ## Concurrency Model
@@ -262,14 +315,14 @@ History      []AgentMessage        // Default: nil (session resume seeding, Phas
 
 ## Dependencies
 
-**Direct (Phase 5–6 additions):**
-- `github.com/bmatcuk/doublestar/v4` — glob matching for find.go WalkDir fallback
-- `golang.org/x/image` (draw, webp) — image downscale, WebP decode for read_image.go
+**Direct:**
+- `github.com/bmatcuk/doublestar/v4` — glob matching for find.go WalkDir fallback (Phase 5)
+- `golang.org/x/image` (draw, webp) — image downscale, WebP decode for read_image.go (Phase 5)
 - `github.com/google/uuid` — uuidv7 generation for session IDs (Phase 6)
 - `golang.org/x/sys` — Windows LockFileEx (Phase 6, untested best-effort)
 
 **Existing:**
-- Standard library: context, encoding/json, io, os, syscall, time, etc.
+- Standard library: context, encoding/json, io, os, syscall, time, crypto/sha256, etc.
 
 ## Stability Notes
 

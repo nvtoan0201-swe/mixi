@@ -191,3 +191,45 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - E2E test suite covers signal handling, session persistence, and tool calls
 
 **Summary:** First end-to-end binary shipped. Print mode fully functional with settings, flags, session persistence, and signal handling. CLI architecture ready for permission engine, TUI, and RPC modes (phases 8+).
+
+## Phase 8: Compaction & Working Set (2026-06-04)
+
+### Compaction Package (`internal/compact`)
+- Implement usage-anchored token estimation (provider tokens; pure chars/4 fallback post-compaction until fresh usage)
+- Build Pi-compatible turn serialization (messages + tool results; custom-entry file-list merge)
+- Create cut-point selection: never breaks at toolResult; splits on turn boundary; repeats from previous firstKeptEntryId
+- Implement 4 ported summarization prompts (user/assistant/tool/mixed-turn context)
+- Add LLMSummarizer integration for conversation context during summarization
+- Build Compactor state machine (single-entry-per-success guard, prevents duplicate compaction)
+- Implement Controller bridge: synchronous persistence (OnMessage hook), 3 compaction triggers (pre-flight once/turn, post-turn, overflow retry-once), pinned mapping, workset persistence via custom{workingset} entry
+- 8+ tests: estimator anchor/fallback, cut-point logic, summary generation, controller triggers
+
+### Working Set Package (`internal/workset`)
+- Implement FileStamp: mtime+size fast-path, sha256 confirmation for unchanged files
+- Add file-freshness tracking: detects disk changes, caps notice at 20 files
+- Build ContextBuilder: assembly pipeline (summary → pinned → kept history → staleness notice)
+- Implement budget pipeline: trim old >1 KiB tool results (largest-first, outside last 2 turns) → compact once → hard error if overflow persists
+- Add custom-entry persistence: WorkingSet saved in session for multi-turn freshness tracking
+- Projection-only: context assembly never mutates storage
+- 7+ tests: FileStamp staleness, budget pipeline, context assembly
+
+### Agent Loop Enhancements
+- Add 3 optional hooks: OnMessage (sync persistence seam), AfterTurn (post-turn trigger), OnContextOverflow (drop failed msg, compact, retry once)
+- Implement Agent.Notify for harness event emission
+- Integrate FileObserver into tools.Options for read/write/edit recording
+
+### Print Mode Updates
+- Move persistence from async event subscriber into OnMessage hook (fixes session-lag race)
+- Enable auto-compaction during print mode operation
+
+### Configuration
+- Add compaction.disabled kill-switch (bool, default: false)
+- Add compaction.reserveTokens (default: 16384) — minimum context budget kept free
+- Add compaction.keepRecentTokens (default: 20000) — soft limit on working set
+
+### Test Infrastructure & Quality
+- Add scripted Usage field on agenttest.Turn and faux ScriptTurn for compaction trigger testing
+- Implement 2 E2E scenarios through RunPrint: overflow recovery and multi-turn persistence
+- All 15 project packages pass `-race -count=1`; compact 75.9%, workset 94.4% coverage
+
+**Summary:** Context management complete. Sessions now support automatic compaction under budget pressure, file-freshness awareness, and overflow recovery. Agent loop extensible via hooks. Print mode race condition fixed. Unblocks TUI phase (9+) for UI-driven `/compact` and `/pin` commands.
