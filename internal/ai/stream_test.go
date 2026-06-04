@@ -8,7 +8,11 @@ import (
 
 func registerScripted(t *testing.T, api string, events []StreamEvent) Model {
 	t.Helper()
-	Register(fakeProvider{api: api, events: func(Model) []StreamEvent { return events }})
+	// Idempotent under `go test -count=N`: the registry is process-global
+	// and each test always scripts the same events for its API key.
+	if _, err := Resolve(api); err != nil {
+		Register(fakeProvider{api: api, events: func(Model) []StreamEvent { return events }})
+	}
 	return Model{API: api, Provider: "test", ID: "scripted"}
 }
 

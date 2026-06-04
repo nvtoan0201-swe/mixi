@@ -30,9 +30,17 @@ func (f fakeProvider) Stream(ctx context.Context, model Model, c Context, opts S
 	return ch
 }
 
+// registerOnce keeps registry tests idempotent under `go test -count=N`:
+// the global registry persists across runs within one process.
+func registerOnce(p Provider) {
+	if _, err := Resolve(p.API()); err != nil {
+		Register(p)
+	}
+}
+
 func TestRegisterAndResolve(t *testing.T) {
 	p := fakeProvider{api: "test-resolve"}
-	Register(p)
+	registerOnce(p)
 	got, err := Resolve("test-resolve")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -64,7 +72,7 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 		wg.Add(2)
 		go func(n int) {
 			defer wg.Done()
-			Register(fakeProvider{api: fmt.Sprintf("test-race-%d", n)})
+			registerOnce(fakeProvider{api: fmt.Sprintf("test-race-%d", n)})
 		}(i)
 		go func(n int) {
 			defer wg.Done()
