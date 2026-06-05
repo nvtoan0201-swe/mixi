@@ -138,6 +138,15 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		defer mcpMgr.Close()
 	}
 
+	extHost, err := startExtensions(rc, cwd, store, reg, log, notifier.notice)
+	if err != nil {
+		fmt.Fprintf(stderr, "mixi: %v\n", err)
+		return modes.ExitUsage
+	}
+	if extHost != nil {
+		defer extHost.Close()
+	}
+
 	apiKey, _ := apiKeyFromEnv(rc.Model.Provider)
 	ctrl := compact.NewController(compact.ControllerConfig{
 		Store:      store,
@@ -168,7 +177,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	a := agent.New(agent.Config{
 		Model:        rc.Model,
 		Tools:        reg,
-		Filters:      []agent.ToolCallFilter{permissionFilter{eng}},
+		Filters:      append([]agent.ToolCallFilter{permissionFilter{eng}}, extensionFilters(extHost)...),
 		SystemPrompt: systemPrompt(f, reg, cwd),
 		StreamOpts:   streamOpts(rc, store),
 		MaxTurns:     maxTurns(rc.MaxTurns),
@@ -178,12 +187,16 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	})
 	ctrl.SetNotify(a.Notify)
 	notifier.set(a)
+	if extHost != nil {
+		unbind := bindExtensions(extHost, a, store, &notifier, rc.Mode != config.ModeTUI, stderr, log)
+		defer unbind()
+	}
 
 	stopSignals := handleSignals(a, jobs, store)
 	defer stopSignals()
 
 	if rc.Mode == config.ModeTUI {
-		return runTUI(a, eng, ctrl, store, jobs, mcpMgr, rc, stderr)
+		return runTUI(a, eng, ctrl, store, jobs, mcpMgr, extHost, rc, stderr)
 	}
 	return modes.RunPrint(context.Background(), modes.PrintDeps{
 		Agent: a, Out: stdout, ErrOut: stderr, Log: log,

@@ -94,6 +94,10 @@ type EvPermissionAsk struct{ Req any }
 // EvNotice is a user-visible harness notice (max-turns hit, queue full…).
 type EvNotice struct{ Text string }
 
+// EvStatus sets a keyed footer status segment (extension status lines);
+// empty Text clears the segment.
+type EvStatus struct{ Key, Text string }
+
 func (EvAgentStart) isEvent()      {}
 func (EvAgentEnd) isEvent()        {}
 func (EvTurnStart) isEvent()       {}
@@ -110,6 +114,7 @@ func (EvCompactionStart) isEvent() {}
 func (EvCompactionEnd) isEvent()   {}
 func (EvPermissionAsk) isEvent()   {}
 func (EvNotice) isEvent()          {}
+func (EvStatus) isEvent()          {}
 
 // isRenderOnly reports whether an event may be dropped for slow consumers.
 // Lifecycle events must reach every subscriber or the subscriber is cut.

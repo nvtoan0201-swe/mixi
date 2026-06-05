@@ -10,6 +10,7 @@ import (
 
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/ai"
+	"github.com/user/mixi-agent/internal/ext"
 	"github.com/user/mixi-agent/internal/mcp"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
@@ -29,6 +30,13 @@ type MCPFleet interface {
 	Reconnect(name string) error
 }
 
+// ExtFleet exposes extension state and commands; *ext.Host satisfies it.
+type ExtFleet interface {
+	Status() []ext.Status
+	Commands() []ext.Command
+	DispatchCommand(name, args string) error
+}
+
 // Deps wires the TUI to the runtime assembled in cmd/mixi.
 type Deps struct {
 	Agent     *agent.Agent
@@ -37,6 +45,7 @@ type Deps struct {
 	Store     session.Storage
 	Jobs      JobCounter
 	MCP       MCPFleet   // nil when no MCP servers are configured
+	Ext       ExtFleet   // nil when no extensions are running
 	Models    []ai.Model // catalog for /model and ctrl+p
 }
 
@@ -74,6 +83,9 @@ func newRootModel(d Deps) *rootModel {
 		cmds:       commandTable(),
 		transcript: newTranscript(),
 		editor:     newEditor(),
+	}
+	if d.Ext != nil {
+		m.cmds = append(m.cmds, extensionCommands(d.Ext)...)
 	}
 	m.status.model = d.Agent.Model()
 	m.status.thinking = d.Agent.Thinking()

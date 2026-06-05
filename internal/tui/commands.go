@@ -27,6 +27,7 @@ func commandTable() []commandSpec {
 	return []commandSpec{
 		{"/compact", "compact context now [focus]", cmdCompact},
 		{"/cost", "session token/cost totals", cmdCost},
+		{"/ext", "extension status", cmdExt},
 		{"/fork", "fork session (use --resume <id> --fork <entry>)", cmdSessionHint},
 		{"/mcp", "MCP server status; /mcp reconnect <name>", cmdMCP},
 		{"/mode", "cycle or set permission mode", cmdMode},
@@ -240,6 +241,41 @@ func cmdMCP(m *rootModel, arg string) tea.Cmd {
 	b.WriteString("\nReconnect a failed server: /mcp reconnect <name>")
 	m.transcript.notice(b.String(), false)
 	return nil
+}
+
+func cmdExt(m *rootModel, _ string) tea.Cmd {
+	fleet := m.deps.Ext
+	if fleet == nil {
+		m.transcript.notice("No extensions running (add extensions to settings.json or drop executables in .mixi/extensions/).", false)
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("Extensions:")
+	for _, st := range fleet.Status() {
+		fmt.Fprintf(&b, "\n  %-20s %-12s %d tools", st.Name, st.State, st.Tools)
+	}
+	m.transcript.notice(b.String(), false)
+	return nil
+}
+
+// extensionCommands projects extension-registered commands into the slash
+// command table; invoking one dispatches a user_input event to its owner.
+func extensionCommands(fleet ExtFleet) []commandSpec {
+	var specs []commandSpec
+	for _, c := range fleet.Commands() {
+		name := c.Name
+		specs = append(specs, commandSpec{
+			name: "/" + name,
+			help: c.Description + " (ext:" + c.Ext + ")",
+			run: func(m *rootModel, arg string) tea.Cmd {
+				if err := m.deps.Ext.DispatchCommand(name, arg); err != nil {
+					m.transcript.notice(err.Error(), true)
+				}
+				return nil
+			},
+		})
+	}
+	return specs
 }
 
 // cmdSessionHint covers session switching, which requires a process-level

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/user/mixi-agent/internal/procgroup"
 	"github.com/user/mixi-agent/internal/wire"
 )
 
@@ -64,7 +65,7 @@ func NewStdio(opts StdioOptions) (Transport, error) {
 	for k, v := range opts.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	setProcGroup(cmd)
+	procgroup.Set(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -163,11 +164,11 @@ func (t *stdioTransport) Close() error {
 		if t.waitExit(closeGrace) {
 			return
 		}
-		groupKill(t.cmd, syscall.SIGTERM)
+		procgroup.Kill(t.cmd, syscall.SIGTERM)
 		if t.waitExit(closeGrace) {
 			return
 		}
-		groupKill(t.cmd, syscall.SIGKILL)
+		procgroup.Kill(t.cmd, syscall.SIGKILL)
 		<-t.exited
 	})
 	return t.closeErr

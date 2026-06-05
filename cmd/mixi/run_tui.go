@@ -9,6 +9,7 @@ import (
 	"github.com/user/mixi-agent/internal/ai"
 	"github.com/user/mixi-agent/internal/compact"
 	"github.com/user/mixi-agent/internal/config"
+	"github.com/user/mixi-agent/internal/ext"
 	"github.com/user/mixi-agent/internal/mcp"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
@@ -20,7 +21,7 @@ import (
 // its outcome onto a process exit code.
 func runTUI(a *agent.Agent, eng *perm.Engine, ctrl *compact.Controller,
 	store session.Storage, jobs *tools.JobTable, mcpMgr *mcp.Manager,
-	rc *config.RuntimeConfig, stderr io.Writer) int {
+	extHost *ext.Host, rc *config.RuntimeConfig, stderr io.Writer) int {
 	deps := tui.Deps{
 		Agent:     a,
 		Engine:    eng,
@@ -31,6 +32,9 @@ func runTUI(a *agent.Agent, eng *perm.Engine, ctrl *compact.Controller,
 	}
 	if mcpMgr != nil { // a nil *Manager must stay a nil interface
 		deps.MCP = mcpMgr
+	}
+	if extHost != nil { // same typed-nil guard for the extension fleet
+		deps.Ext = extHost
 	}
 	err := tui.Run(context.Background(), deps)
 	if err != nil {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -26,11 +27,23 @@ type statusModel struct {
 	jobs      int
 	running   bool
 	width     int
+	segments  map[string]string // extension footer segments, keyed by ext name
 }
 
 // observe folds usage off the event stream: the latest assistant message's
 // usage is the current context size; cost accumulates across the session.
 func (s *statusModel) observe(ev agent.Event) {
+	if st, ok := ev.(agent.EvStatus); ok {
+		if s.segments == nil {
+			s.segments = map[string]string{}
+		}
+		if st.Text == "" {
+			delete(s.segments, st.Key)
+		} else {
+			s.segments[st.Key] = st.Text
+		}
+		return
+	}
 	end, ok := ev.(agent.EvMessageEnd)
 	if !ok {
 		return
@@ -67,6 +80,19 @@ func (s *statusModel) view() string {
 	if s.running {
 		parts = append(parts, "running")
 	}
+	for _, key := range sortedKeys(s.segments) {
+		parts = append(parts, s.segments[key])
+	}
 	line := strings.Join(parts, " • ")
 	return statusStyle.Width(max(s.width, lipgloss.Width(line)+2)).Render(line)
+}
+
+// sortedKeys orders segment keys so the footer is stable across renders.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

@@ -74,6 +74,17 @@ func (n *agentNotifier) notice(text string) {
 	a.Notify(agent.EvNotice{Text: text})
 }
 
+// publishEvent forwards an arbitrary bus event (extension status segments,
+// …); events raised before the agent exists are dropped.
+func (n *agentNotifier) publishEvent(ev agent.Event) {
+	n.mu.Lock()
+	a := n.a
+	n.mu.Unlock()
+	if a != nil {
+		a.Notify(ev)
+	}
+}
+
 // permissionFilter adapts the permission engine onto the agent's tool-call
 // filter pipeline.
 type permissionFilter struct {

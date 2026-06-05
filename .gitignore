@@ -95,3 +95,9 @@ external/
 
 # Git worktrees (local development only)
 worktrees/
+
+# Local build artifact of the mixi CLI
+/mixi
+
+# WSL alternate-data-stream download metadata
+*:Zone.Identifier

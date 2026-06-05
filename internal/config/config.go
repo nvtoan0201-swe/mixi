@@ -20,7 +20,7 @@ type Settings struct {
 	Compaction  CompactionSettings         `json:"compaction"`
 	Files       FileSettings               `json:"files"`
 	MCPServers  map[string]json.RawMessage `json:"mcpServers"` // decoded by the MCP subsystem
-	Extensions  []string                   `json:"extensions"`
+	Extensions  map[string]json.RawMessage `json:"extensions"` // decoded by the extension host
 }
 
 type ModelSettings struct {
@@ -136,12 +136,12 @@ func expandEnv(s string) string {
 }
 
 // expandSettings applies ${ENV} expansion to every settings string that can
-// carry user-supplied values. MCPServers stays raw: its decoder expands at
-// parse time so secrets are resolved as late as possible.
+// carry user-supplied values. MCPServers and Extensions stay raw: their
+// decoders expand at parse time so secrets are resolved as late as possible.
 func expandSettings(s *Settings) {
 	s.Model.Default = expandEnv(s.Model.Default)
 	for _, list := range [][]string{
-		s.Permissions.Allow, s.Permissions.Deny, s.Permissions.DenyPatterns, s.Extensions,
+		s.Permissions.Allow, s.Permissions.Deny, s.Permissions.DenyPatterns,
 	} {
 		for i, v := range list {
 			list[i] = expandEnv(v)
