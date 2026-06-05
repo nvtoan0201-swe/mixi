@@ -9,6 +9,7 @@ import (
 
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/ai"
+	"github.com/user/mixi-agent/internal/obs"
 )
 
 // Exit codes per the print-mode contract. 130 = 128+SIGINT, the shell
@@ -51,11 +52,11 @@ func RunPrint(ctx context.Context, d PrintDeps, opts PrintOptions) int {
 	events, unsubscribe := d.Agent.Subscribe()
 	defer unsubscribe()
 
-	var stats usageStats
+	stats := obs.NewTracker()
 	endReason := make(chan agent.EndReason, 1)
 	go func() {
 		for ev := range events {
-			stats.observe(ev)
+			stats.Observe(ev)
 			sink.Emit(ev)
 			if end, ok := ev.(agent.EvAgentEnd); ok {
 				endReason <- end.Reason
@@ -79,7 +80,7 @@ func RunPrint(ctx context.Context, d PrintDeps, opts PrintOptions) int {
 
 	reason := <-endReason
 	if opts.PrintStats {
-		stats.print(d.ErrOut)
+		fmt.Fprintln(d.ErrOut, stats.Snapshot().Summary())
 	}
 	switch reason {
 	case agent.EndError:
@@ -96,38 +97,4 @@ func userMessage(text string) agent.AgentMessage {
 		Content:   []ai.Content{ai.TextContent{Text: text}},
 		Timestamp: time.Now().UnixMilli(),
 	}}
-}
-
-// usageStats aggregates per-run token usage from assistant messages.
-type usageStats struct {
-	turns int
-	usage ai.Usage
-}
-
-func (s *usageStats) observe(ev agent.Event) {
-	end, ok := ev.(agent.EvMessageEnd)
-	if !ok {
-		return
-	}
-	mm, ok := end.Msg.(agent.ModelMessage)
-	if !ok {
-		return
-	}
-	am, ok := mm.Msg.(ai.AssistantMessage)
-	if !ok {
-		return
-	}
-	s.turns++
-	s.usage.Input += am.Usage.Input
-	s.usage.Output += am.Usage.Output
-	s.usage.CacheRead += am.Usage.CacheRead
-	s.usage.CacheWrite += am.Usage.CacheWrite
-	s.usage.Total += am.Usage.Total
-	s.usage.Cost.Total += am.Usage.Cost.Total
-}
-
-func (s *usageStats) print(w io.Writer) {
-	fmt.Fprintf(w, "turns=%d tokens: input=%d output=%d cacheRead=%d cacheWrite=%d total=%d cost=$%.4f\n",
-		s.turns, s.usage.Input, s.usage.Output, s.usage.CacheRead, s.usage.CacheWrite,
-		s.usage.Total, s.usage.Cost.Total)
 }

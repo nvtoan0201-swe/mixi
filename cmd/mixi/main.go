@@ -1,6 +1,7 @@
-// Command mixi is the coding-agent CLI. This phase ships print mode
-// (`mixi -p "prompt"`); TUI, RPC, and replay modes land in later phases and
-// currently exit with a "not yet available" notice.
+// Command mixi is the coding-agent CLI: interactive TUI by default, print
+// mode (`mixi -p "prompt"`), and `mixi replay <session.jsonl>`; RPC mode
+// lands in a later phase and currently exits with a "not yet available"
+// notice.
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"github.com/user/mixi-agent/internal/compact"
 	"github.com/user/mixi-agent/internal/config"
 	"github.com/user/mixi-agent/internal/modes"
+	"github.com/user/mixi-agent/internal/obs"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
 	"github.com/user/mixi-agent/internal/tools"
@@ -89,7 +91,26 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		return modes.ExitUsage
 	}
 
+	// Observability comes up first so every later subsystem logs through it.
+	// The TUI owns the terminal exclusively, so it gets no stderr mirror —
+	// records go only to the daily log file.
+	var mirror io.Writer
+	if rc.Mode != config.ModeTUI {
+		mirror = stderr
+	}
+	log, closeLog := obs.Setup(obs.LogOptions{
+		Level:   obs.LevelFromConfig(rc.LogLevel, f.WasSet("log-level")),
+		Mirror:  mirror,
+		Verbose: rc.Verbose,
+	})
+	defer closeLog()
+	// Package-level slog call sites (session crash recovery) follow the same
+	// policy instead of leaking onto the terminal.
+	slog.SetDefault(log)
+
 	switch rc.Mode {
+	case config.ModeReplay:
+		return runReplay(rc, stdout, stderr)
 	case config.ModePrint, config.ModeTUI:
 	default:
 		fmt.Fprintf(stderr, "mixi: %s mode is not yet available\n", rc.Mode)
@@ -104,17 +125,13 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		return modes.ExitUsage
 	}
 
-	// TUI mode owns the terminal: logs must never hit stdout/stderr, only a
-	// file (full observability wiring is a later concern — the guard is not).
-	logW, closeLog := logWriter(rc, stderr)
-	defer closeLog()
-	log := newLogger(logW, rc.LogLevel)
 	store, err := openSession(rc, cwd, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: %v\n", err)
 		return modes.ExitUsage
 	}
 	defer store.Close()
+	log = log.With("session_id", store.Header().ID)
 
 	ws := workset.New()
 	reg := tools.NewRegistry()
@@ -129,7 +146,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	// agent bus once the agent exists (it breaks construction cycles).
 	var notifier agentNotifier
 
-	mcpMgr, err := startMCP(rc, reg, log, notifier.notice)
+	mcpMgr, err := startMCP(rc, reg, log.With("component", "mcp"), notifier.notice)
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: %v\n", err)
 		return modes.ExitUsage
@@ -138,7 +155,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		defer mcpMgr.Close()
 	}
 
-	extHost, err := startExtensions(rc, cwd, store, reg, log, notifier.notice)
+	extHost, err := startExtensions(rc, cwd, store, reg, log.With("component", "ext"), notifier.notice)
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: %v\n", err)
 		return modes.ExitUsage
@@ -157,7 +174,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		Reserve:    settings.Compaction.ReserveTokens,
 		KeepRecent: settings.Compaction.KeepRecentTokens,
 		Enabled:    !settings.Compaction.Disabled,
-		Log:        log,
+		Log:        log.With("component", "compact"),
 	})
 	hooks := ctrl.Hooks()
 	hooks.GetAPIKey = apiKeyFromEnv
@@ -183,7 +200,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		MaxTurns:     maxTurns(rc.MaxTurns),
 		History:      ctrl.LoadHistory(),
 		Hooks:        hooks,
-		Log:          log,
+		Log:          log.With("component", "agent"),
 	})
 	ctrl.SetNotify(a.Notify)
 	notifier.set(a)
@@ -206,23 +223,6 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		JSON:       rc.OutputJSON,
 		PrintStats: rc.PrintStats,
 	})
-}
-
-// logWriter picks the slog destination: stderr for headless modes, a file
-// (or discard) for the TUI so the renderer owns the terminal exclusively.
-func logWriter(rc *config.RuntimeConfig, stderr io.Writer) (io.Writer, func()) {
-	if rc.Mode != config.ModeTUI {
-		return stderr, func() {}
-	}
-	if err := os.MkdirAll(rc.SessionDir, 0o700); err != nil {
-		return io.Discard, func() {}
-	}
-	f, err := os.OpenFile(filepath.Join(rc.SessionDir, "mixi.log"),
-		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return io.Discard, func() {}
-	}
-	return f, func() { f.Close() }
 }
 
 // handleSignals maps SIGINT to a graceful abort (the run ends with exit
@@ -249,21 +249,6 @@ func handleSignals(a *agent.Agent, jobs *tools.JobTable, store session.Storage) 
 		}
 	}()
 	return func() { signal.Stop(ch); close(ch) }
-}
-
-func newLogger(w io.Writer, level string) *slog.Logger {
-	var lv slog.Level
-	switch level {
-	case "debug":
-		lv = slog.LevelDebug
-	case "info":
-		lv = slog.LevelInfo
-	case "error":
-		lv = slog.LevelError
-	default:
-		lv = slog.LevelWarn
-	}
-	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lv}))
 }
 
 func maxTurns(n int) int {

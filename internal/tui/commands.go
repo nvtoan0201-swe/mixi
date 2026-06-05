@@ -99,7 +99,19 @@ func cmdCompact(m *rootModel, arg string) tea.Cmd {
 }
 
 func cmdCost(m *rootModel, _ string) tea.Cmd {
-	m.transcript.notice(fmt.Sprintf("Session cost: $%.4f • last context: %d tokens", m.status.cost, m.status.ctxTokens), false)
+	if m.status.usage == nil {
+		m.transcript.notice("Session cost: no usage recorded yet.", false)
+		return nil
+	}
+	snap := m.status.usage.Snapshot()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Session cost: $%.4f • last context: %d tokens\n%s",
+		snap.Total.Cost.Total, snap.LastContext, snap.Summary())
+	for _, model := range sortedKeys(snap.ByModel) {
+		u := snap.ByModel[model]
+		fmt.Fprintf(&sb, "\n  %s: %d tokens, $%.4f", model, u.Total, u.Cost.Total)
+	}
+	m.transcript.notice(sb.String(), false)
 	return nil
 }
 

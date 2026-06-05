@@ -164,6 +164,7 @@ func prepareCall(ctx context.Context, d *loopDeps, call ai.ToolCall) (tools.Tool
 // invokeTool executes one prepared call with panic recovery, partial-output
 // pumping, and the AfterToolCall hook.
 func invokeTool(ctx context.Context, d *loopDeps, tool tools.Tool, call ai.ToolCall) ai.ToolResultMessage {
+	from := time.Now()
 	updates := make(chan tools.ToolUpdate, 16)
 	var pumpWG sync.WaitGroup
 	pumpWG.Add(1)
@@ -182,6 +183,8 @@ func invokeTool(ctx context.Context, d *loopDeps, tool tools.Tool, call ai.ToolC
 		res = tools.Errorf("%s", err.Error())
 	}
 	d.Hooks.afterToolCall(ctx, d.Log, call, &res)
+	d.Log.Info("agent: tool exec", "tool", call.Name, "call_id", call.ID,
+		"is_error", res.IsError, "latency_ms", time.Since(from).Milliseconds())
 	return ai.ToolResultMessage{
 		ToolCallID: call.ID,
 		ToolName:   call.Name,

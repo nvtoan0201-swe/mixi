@@ -9,6 +9,7 @@ import (
 
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/ai"
+	"github.com/user/mixi-agent/internal/obs"
 )
 
 var statusStyle = lipgloss.NewStyle().
@@ -17,11 +18,13 @@ var statusStyle = lipgloss.NewStyle().
 	Padding(0, 1)
 
 // statusModel renders `model • thinking • ctx% • $cost • mode • jobs`.
-// Token/cost figures anchor on real provider usage from assistant messages.
+// Token/cost figures come from the usage tracker, which anchors on real
+// provider usage from assistant messages — the same source /cost reports.
 type statusModel struct {
 	model     ai.Model
 	thinking  ai.ThinkingLevel
 	permMode  string
+	usage     *obs.Tracker
 	cost      float64
 	ctxTokens int
 	jobs      int
@@ -30,8 +33,8 @@ type statusModel struct {
 	segments  map[string]string // extension footer segments, keyed by ext name
 }
 
-// observe folds usage off the event stream: the latest assistant message's
-// usage is the current context size; cost accumulates across the session.
+// observe feeds the usage tracker off the event stream and refreshes the
+// rendered figures when an assistant message completes.
 func (s *statusModel) observe(ev agent.Event) {
 	if st, ok := ev.(agent.EvStatus); ok {
 		if s.segments == nil {
@@ -44,20 +47,17 @@ func (s *statusModel) observe(ev agent.Event) {
 		}
 		return
 	}
-	end, ok := ev.(agent.EvMessageEnd)
-	if !ok {
+	if s.usage == nil {
 		return
 	}
-	mm, ok := end.Msg.(agent.ModelMessage)
-	if !ok {
-		return
+	s.usage.Observe(ev)
+	if _, ok := ev.(agent.EvMessageEnd); ok {
+		total, lastCtx := s.usage.Totals()
+		if lastCtx > 0 {
+			s.ctxTokens = lastCtx
+			s.cost = total.Cost.Total
+		}
 	}
-	am, ok := mm.Msg.(ai.AssistantMessage)
-	if !ok || am.Usage.Total == 0 {
-		return
-	}
-	s.ctxTokens = am.Usage.Input + am.Usage.CacheRead + am.Usage.CacheWrite + am.Usage.Output
-	s.cost += am.Usage.Cost.Total
 }
 
 func (s *statusModel) view() string {
@@ -87,8 +87,9 @@ func (s *statusModel) view() string {
 	return statusStyle.Width(max(s.width, lipgloss.Width(line)+2)).Render(line)
 }
 
-// sortedKeys orders segment keys so the footer is stable across renders.
-func sortedKeys(m map[string]string) []string {
+// sortedKeys orders map keys so footer segments and per-model cost lines
+// render stably.
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

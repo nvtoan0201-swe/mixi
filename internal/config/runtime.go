@@ -31,6 +31,7 @@ type RuntimeConfig struct {
 	PermissionMode string
 	Fsync          bool
 	LogLevel       string
+	Verbose        bool
 }
 
 // Resolve applies precedence (flags > settings > defaults) and decides the
@@ -82,6 +83,7 @@ func Resolve(f *Flags, s Settings, cwd, stdin string) (*RuntimeConfig, error) {
 	rc.MaxTokens = f.MaxTokens
 	rc.Fsync = s.Files.Fsync
 	rc.LogLevel = f.LogLevel
+	rc.Verbose = f.Verbose
 
 	rc.PermissionMode = "prompt"
 	if s.Permissions.Mode != "" {

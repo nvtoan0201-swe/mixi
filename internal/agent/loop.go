@@ -93,6 +93,8 @@ func runLoop(ctx context.Context, d *loopDeps, history []AgentMessage, initial [
 				return end(EndMaxTurns)
 			}
 			d.emit(EvTurnStart{Turn: turn})
+			d.Log.Info("agent: turn start", "turn", turn, "model", model.ID)
+			turnFrom := time.Now()
 
 			// [STREAM] one assistant turn, with transient-retry handling.
 			asst, ok := streamTurn(ctx, d, msgs, model, opts)
@@ -118,6 +120,9 @@ func runLoop(ctx context.Context, d *loopDeps, history []AgentMessage, initial [
 
 			// [TURN_END]
 			d.emit(EvTurnEnd{Turn: turn, Message: asst, ToolResults: toolResults})
+			d.Log.Info("agent: turn end", "turn", turn, "model", model.ID,
+				"stop_reason", string(asst.StopReason), "tool_calls", len(calls),
+				"latency_ms", time.Since(turnFrom).Milliseconds())
 			if ctx.Err() != nil {
 				return end(EndAborted)
 			}

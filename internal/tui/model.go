@@ -12,6 +12,7 @@ import (
 	"github.com/user/mixi-agent/internal/ai"
 	"github.com/user/mixi-agent/internal/ext"
 	"github.com/user/mixi-agent/internal/mcp"
+	"github.com/user/mixi-agent/internal/obs"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
 )
@@ -89,6 +90,7 @@ func newRootModel(d Deps) *rootModel {
 	}
 	m.status.model = d.Agent.Model()
 	m.status.thinking = d.Agent.Thinking()
+	m.status.usage = obs.NewTracker()
 	if d.Engine != nil {
 		m.status.permMode = string(d.Engine.Mode())
 	}

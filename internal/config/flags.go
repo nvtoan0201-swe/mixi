@@ -50,12 +50,15 @@ type Flags struct {
 	NoMCP              bool
 	NoExtensions       bool
 	LogLevel           string
+	Verbose            bool
 	PrintStats         bool
 	ConfigPath         string
 	Version            bool
 
 	ReplayFile string // set by the replay subcommand
 	IsReplay   bool
+	Speed      string // replay pacing
+	Until      string // replay cut-off entry id
 
 	set map[string]bool
 }
@@ -109,7 +112,10 @@ func ParseFlags(args []string, errOut io.Writer) (*Flags, error) {
 	fs.BoolVar(&f.NoMCP, "no-mcp", false, "skip MCP servers")
 	fs.BoolVar(&f.NoExtensions, "no-extensions", false, "skip extensions")
 	fs.StringVar(&f.LogLevel, "log-level", "warn", "debug|info|warn|error")
+	fs.BoolVar(&f.Verbose, "verbose", false, "mirror all log records to stderr (headless modes)")
 	fs.BoolVar(&f.PrintStats, "print-stats", false, "usage summary to stderr (print mode)")
+	fs.StringVar(&f.Speed, "speed", "1x", "replay pacing: 1x|5x|instant")
+	fs.StringVar(&f.Until, "until", "", "replay up to an entry id")
 	fs.StringVar(&f.ConfigPath, "config", "", "extra settings file (highest file precedence)")
 	fs.BoolVar(&f.Version, "version", false, "print version and exit")
 
@@ -147,6 +153,7 @@ func validateEnums(f *Flags) error {
 		{"--output", f.Output, []string{"text", "json"}},
 		{"--thinking", f.Thinking, []string{"off", "low", "medium", "high"}},
 		{"--log-level", f.LogLevel, []string{"debug", "info", "warn", "error"}},
+		{"--speed", f.Speed, []string{"1x", "5x", "instant"}},
 	}
 	if f.PermissionMode != "" {
 		checks = append(checks, struct {
