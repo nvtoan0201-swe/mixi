@@ -36,7 +36,7 @@ Note: old `internal/ai` skeleton (commit `add2cf0`) was intentionally reset; its
 | 6 | [Session Persistence](./phase-06-session-persistence.md) | ✅ Complete (260604, entry IDs use uuidv7 random tail) |
 | 7 | [CLI & Print Mode E2E](./phase-07-cli-print-mode-e2e.md) | ✅ Complete (260604, live API smoke documented in README — manual; E2E offline via faux) |
 | 8 | [Compaction & Working Set](./phase-08-compaction-working-set.md) | ✅ Complete (260604, controller bridge in `internal/compact/controller.go`; BRANCH prompt ported, consumer lands with TUI) |
-| 9 | [Permission Engine](./phase-09-permission-engine.md) | Pending |
+| 9 | [Permission Engine](./phase-09-permission-engine.md) | ✅ Complete (260605, secret screen covers read+grep; TOCTOU accepted v1) |
 | 10 | [Interactive TUI](./phase-10-interactive-tui.md) | Pending |
 | 11 | [MCP Client](./phase-11-mcp-client.md) | Pending |
 | 12 | [Extension Host](./phase-12-extension-host.md) | Pending |

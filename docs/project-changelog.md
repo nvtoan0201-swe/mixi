@@ -233,3 +233,68 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - All 15 project packages pass `-race -count=1`; compact 75.9%, workset 94.4% coverage
 
 **Summary:** Context management complete. Sessions now support automatic compaction under budget pressure, file-freshness awareness, and overflow recovery. Agent loop extensible via hooks. Print mode race condition fixed. Unblocks TUI phase (9+) for UI-driven `/compact` and `/pin` commands.
+
+## Phase 9: Permission Engine (2026-06-05)
+
+### Permission Engine Package (`internal/perm`)
+- Implement Mode enum: plan (read-only), prompt (default; read free, rest asks), auto-edit (read+write free, execute asks), yolo (all allowed except explicit denies)
+- Build Policy struct with rule parsing: `bash(prefix*)` command glob, `read/write/edit(glob)` path doublestar glob (doublestar-validated), `mcp__server__tool` exact/glob
+- Add Rule.Matches: bash commands matched via wildcard prefix, paths matched via doublestar glob relative to cwd, mcp names matched via wildcard
+- Implement Engine.Decide decision pipeline: explicit rules (--deny flags > --allow flags > settings deny > settings allow) → baseline screens → session grants → mode defaults → headless asker
+- Add baseline safety screens (non-yolo): denyPatterns regex hard-deny for bash; write/edit outside cwd subtree → forced-ask (realpath-resolved); read/grep of secret paths (`**/.env*`, `**/*_rsa`, `**/credentials*`) → forced-ask
+- Build session grant store: in-memory per session, generalized from CallInfo (bash: first two tokens + `*`; file ops: directory + `/**`); /permissions listing data structure
+- Implement HeadlessAsker: deny with actionable reason (unless mode yolo/auto-edit); denial is LLM-visible IsError tool result
+- Add preview generation: edit dry-run unified diff (Myers diff, no apply), write file-size summary, bash command+cwd, mcp pretty-printed args
+- Implement Myers line-based diff in diff.go (unified format, ~150 LOC)
+- Add CallInfo struct: extract tool name, command, path, category from ai.ToolCall
+- Add SandboxSpec unused v1 seam (landlock/seccomp adoption pathway)
+- 3 test files: 12 tests covering decision matrix, rule parsing, policy.precedence, secret globs, 90.9% coverage
+
+### Agent Integration
+- Add ToolCallFilter interface to hooks.go: sits ahead of BeforeToolCall, fail-closed (error on crash → tool denied)
+- Integrate filter chain into toolexec.go: filters run in Config.Filters order before BeforeToolCall hook
+- Block decision sent to model as IsError tool result with actionable reason
+
+### CLI Integration (`cmd/mixi`)
+- Add buildPermissionEngine: assemble policy from config + flags, build headless asker
+- Implement permissionFilter adapter: wraps engine onto ToolCallFilter interface
+- Wire filter into agent Config before dispatch
+- Add --permission-mode flag, --allow/--deny repeatable flags
+- Update e2e_permissions_test.go: 3 scenarios (deny rule blocks write, yolo mode bypasses, secret-glob forced-ask)
+
+### Configuration
+- Add PermissionSettings to Settings struct: mode, allow[], deny[], denyPatterns[]
+- Deny lists append-only across global/project/extra layers (enforce security invariant)
+- ${ENV} expansion on all permission strings (except denyPatterns where regex survives)
+- Precedence: --deny flags > --allow flags > settings deny > settings allow > mode defaults
+
+### Behavior Change: Headless Default Mode
+- Old (Phase 7): print mode ran every tool call unrestricted (yolo-equivalent) with warning banner
+- New (Phase 9): default prompt mode denies write/execute/mcp with actionable reason unless:
+  - User passes --permission-mode auto-edit (read+write free), or
+  - User passes --permission-mode yolo (all free except explicit denies), or
+  - Allow rules in settings/flags permit the call, or
+  - Session grant from prior "always" answer exists
+- Motivation: safe-by-default headless mode + explicit opt-in for permissive behavior
+- Impact: users running `mixi -p "edit file.txt"` now see denial reason instead of silent execution
+
+### Test Results & Quality
+- 11 E2E scenarios across perm + agent/loop/toolexec test files
+- Full repo: `go test -race` green; perm 90.9% coverage
+- Decision matrix tested: every mode × category default verified
+- Deny-beats-allow precedence tested
+- Edit preview diff consistency tested (== post-execution diff)
+- Headless ask→deny behavior tested
+- Secret-glob read forced-ask tested
+- Symlink escape (realpath resolve) tested
+
+### Key Deliverables
+- First-class permission engine gating every tool call in print mode
+- Four permission modes with different read/write/execute defaults
+- Allow/deny rules with glob syntax for fine-grained control
+- Baseline safety screens (bash patterns, writes outside cwd, secret globs)
+- Session grants from "always" answers (user confirms once, applies to similar calls)
+- Preview diffs for edit approval, command/args summaries for bash/mcp
+- Headless asker: deny with actionable reason (actionable for users to add rules)
+
+**Summary:** Permission engine complete. Print mode now enforces permission policies by default (prompt mode), with three other modes for read-only (plan), permissive-file (auto-edit), and unrestricted (yolo). Baseline safety screens catch dangerous patterns. Unblocks TUI phase (10+) for interactive permission approval UI and RPC mode for remote agent control.

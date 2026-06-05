@@ -28,14 +28,15 @@
 - **JSON-Schema tool validation** — argument coercion plus LLM-readable error messages
 - **Nine built-in tools** — `read`, `write`, `edit`, `bash` (with background jobs), `bash_output`, `kill_bash`, `grep`, `find`, `ls`
 - **Session persistence** — append-only JSONL tree storage with branching/forking, deferred first write, file locking, and crash-tail recovery
+- **Permission engine** — four modes (plan/prompt/auto-edit/yolo), allow/deny rules with glob syntax, baseline safety screens (dangerous bash patterns, write outside cwd, secret file access), session grants
 
 ### Roadmap
 
-- CLI with print mode (first end-to-end binary)
-- Context compaction & working set
-- Permission engine for tool calls
-- Interactive TUI (Bubble Tea)
-- MCP client (stdio), subprocess extensions, RPC mode
+- ✓ CLI with print mode
+- ✓ Context compaction & working set
+- ✓ Permission engine for tool calls
+- Interactive TUI (Bubble Tea) with permission approval UI
+- MCP client (stdio), subprocess extensions, RPC mode with permission agent
 - OpenAI provider, observability & replay, fault-injection hardening
 
 ## Architecture
@@ -95,11 +96,20 @@ cat hello.txt   # → hi; session JSONL lands under ~/.mixi/sessions/
 # JSONL event stream, piped prompt, follow-ups:
 echo "what does this repo do?" | ./mixi --output json
 ./mixi -p "list the Go files" --message "now count them" --print-stats
+
+# Headless mode in default prompt-mode now asks for approval on writes:
+# (reads are free, execute/mcp ask for approval unless --allow rules permit)
+./mixi -p "edit main.go to add a comment" --permission-mode prompt
+# → Denies write, asks via SIGINT-like message in headless mode (explicit deny)
+
+# To allow writes without approval in headless mode:
+./mixi -p "edit main.go to add a comment" --permission-mode auto-edit
+# → Or: --allow 'edit(main.go)' in settings.json for persistent rules
 ```
 
-Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`. Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
+Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`, `--permission-mode plan|prompt|auto-edit|yolo`, `--allow` (repeatable), `--deny` (repeatable). Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
 
-> **Note:** the permission engine is not wired up yet — print mode currently runs every tool call unrestricted and prints a warning banner. Interactive TUI, RPC, and MCP land in later phases.
+> **Permission Engine (Phase 9):** Print mode now enforces four permission modes; default (`prompt`) asks for approval on write/execute/mcp calls. Use `--permission-mode auto-edit` for read+write free, or configure persistent rules in `~/.mixi/settings.json` under the `permissions` block.
 
 ## Design Highlights
 
@@ -112,14 +122,17 @@ Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id
 
 ```
 mixi-agent/
-├── cmd/mixi/          # CLI entry point (print mode, signals, session wiring)
+├── cmd/mixi/          # CLI entry point (print mode, signals, session wiring, permissions)
 ├── internal/
 │   ├── ai/            # core types, provider registry, anthropic, faux, sse, partialjson
-│   ├── agent/         # runtime loop, events, queues, hooks
+│   ├── agent/         # runtime loop, events, queues, hooks, tool filters
 │   ├── schema/        # JSON-Schema validation & coercion
 │   ├── tools/         # built-in tools
 │   ├── session/       # JSONL tree session storage
 │   ├── config/        # settings files, flags, precedence resolution
+│   ├── perm/          # permission engine (modes, rules, decision pipeline)
+│   ├── compact/       # context compaction (estimator, cutter, summarizer)
+│   ├── workset/       # working-set assembly (file tracking, budget pipeline)
 │   └── modes/         # print mode + EventSink (text / JSONL)
 ├── docs/              # codebase summary, changelog, journals
 ├── scripts/           # development utilities

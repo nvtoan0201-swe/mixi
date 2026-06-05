@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 8 complete (Compaction & Working Set)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 9 complete (Permission Engine)
 
 ## Package Overview
 
@@ -21,6 +21,7 @@
 | `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
 | `internal/compact` | Context compaction: usage-anchored token estimation, turn serialization, cut-point selection, LLM summarization, Compactor state machine | `Compactor`, `Controller`, `LLMSummarizer`, `Estimator` |
 | `internal/workset` | Working-set assembly: file-freshness tracking, context budgeting (trim→compact→error), custom-entry persistence | `WorkingSet`, `FileStamp`, `ContextBuilder` |
+| `internal/perm` | Permission engine: 4 modes (plan/prompt/auto-edit/yolo), rule globs (bash command, path doublestar, MCP name), baseline screens (denied bash patterns, secret-glob forced-ask, write outside cwd), session grants, headless asker | `Engine`, `Policy`, `Mode`, `Rule`, `Asker`, `HeadlessAsker` |
 
 ## Architecture Layers
 
@@ -40,14 +41,24 @@
 - **Models:** global registry of known model IDs + defaults (claude-3.5-sonnet, gpt-4, etc.)
 - **No imports of other internal packages** — type system is self-contained
 
-### Layer 2: Provider Implementation (`internal/ai/anthropic`, `internal/ai/faux`)
+### Layer 2: Permission Engine (`internal/perm`)
+- **Decision pipeline:** explicit rules (--deny flags > --allow flags > settings deny > settings allow) → baseline screens (denyPatterns regex for bash, write outside cwd subtree, secret-glob forced-ask for read/grep) → session grants → mode defaults → headless asker
+- **Modes:** plan (read-only: read allowed, write/execute denied), prompt (default: read allowed, rest asks), auto-edit (read+write allowed, execute asks), yolo (all allowed except explicit denies)
+- **Rules:** `bash(prefix*)` command glob, `read/write/edit(glob)` path doublestar glob (relative anchored at cwd; `**` floats), `mcp__server__tool` exact/glob; doublestar validated at parse time
+- **Baseline screens (non-yolo):** denyPatterns regex hard-deny for bash commands; write/edit operations outside cwd subtree (realpath-resolved) trigger forced-ask; read/grep of secret paths (`**/.env*`, `**/*_rsa`, `**/credentials*`) trigger forced-ask
+- **Session grants:** in-memory per session, generalized from CallInfo (bash: first two tokens + `*`; file ops: directory + `/**`); `/permissions` listing for UI (later phase)
+- **HeadlessAsker:** deny with actionable reason unless mode is yolo or auto-edit; denial is an LLM-visible IsError tool result
+- **SandboxSpec:** unused v1 seam; allows bash execution to adopt landlock/seccomp without interface change
+
+### Layer 2b: Provider Implementation (`internal/ai/anthropic`, `internal/ai/faux`)
 - **Anthropic:** Converts Anthropic wire format → normalized `StreamEvent` order contract; handles extended thinking (redacted_thinking), block tracking, content indexing; SSE decoder + partial JSON repair for streaming text/tool calls; caches model metadata; retry hooks apply to API calls
 - **Faux (E2E test provider):** Scripted, always-compiled model `faux/scripted` replays turns from JSON file (MIXI_FAUX_SCRIPT env); per-process sync.Once load; delegates playback to agenttest.Provider for identical wire behavior to unit tests; used in cmd/mixi E2E suite for SIGINT testing and subprocess re-exec patterns
 
 ### Layer 3: Agent Runtime (`internal/agent`)
+- **ToolCallFilter interface:** sits ahead of BeforeToolCall hook; permission engine implements this for filter-first pipeline; filters fail closed (error on filter crash → tool denied)
 - **Two-level loop structure:**
   1. **Outer:** follow-up extend a run; loop restarts when follow-ups enqueued
-  2. **Inner:** stream assistant turn → extract tool calls → dispatch tools → collect results → advance turn counter
+  2. **Inner:** stream assistant turn → extract tool calls → filter tool calls (ToolCallFilter chain) → dispatch tools → collect results → advance turn counter
 - **Message types:**
   - `ModelMessage` (ai.Message) — provider-level user/assistant/toolResult
   - `BashExecution`, `CompactionSummary`, `BranchSummary` — harness items
@@ -167,8 +178,8 @@
 ## Test Coverage
 
 - **50+ test files** across all packages
-- **Passing tests:** 279 baseline + 15 Phase 8 (compact 75.9%, workset 94.4% coverage) = 294 total
-- **Test scope:** CLI E2E: 6 tests incl. SIGINT abort + signal handling; config: flags + merging + resolution; modes: print/JSON/follow-ups/stats; faux: scripted provider; agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager, compaction/working-set
+- **Passing tests:** 279 baseline + 15 Phase 8 + 11 Phase 9 (perm 90.9% coverage) = 305 total
+- **Test scope:** CLI E2E: 6 tests incl. SIGINT abort + signal handling; config: flags + merging + resolution; modes: print/JSON/follow-ups/stats; faux: scripted provider; agent/loop/toolexec/retry/hooks, AI types/events/registry/stream, schema validation/coercion, nine built-in tools, session storage/tree/lock/loader/manager, compaction/working-set, permission engine (policy/engine/preview)
 - **6 env-skips:** rg/fd absent on test machine (error paths covered via fake lookPath)
 - **Coverage:** all 15 packages pass `-race -count=1`; CLI E2E zero-flakes across 145+ test executions
 - **Race detector:** green (no data races detected)
@@ -176,19 +187,21 @@
 
 ## Key Files
 
-### CLI & Configuration (500+ LOC)
+### CLI & Configuration (600+ LOC)
 - `cmd/mixi/main.go` (CLI entry, realMain, signal handling, mode dispatch)
 - `cmd/mixi/setup.go` (openSession, historyFromSession, systemPrompt, streamOpts resolution)
+- `cmd/mixi/permissions.go` (buildPermissionEngine, permissionFilter adapter on ToolCallFilter interface)
 - `cmd/mixi/e2e_test.go` (subprocess re-exec E2E pattern)
 - `cmd/mixi/e2e_runner_test.go` (E2E runner with signal injection)
-- `internal/config/config.go` (Settings struct, JSON load+merge, ${ENV} expansion, deny lists append-only)
-- `internal/config/flags.go` (stdlib flag, repeatable flags, WasSet tracking)
+- `cmd/mixi/e2e_permissions_test.go` (deny rule, yolo mode, secret-glob forced-ask scenarios)
+- `internal/config/config.go` (Settings struct + PermissionSettings, JSON load+merge, ${ENV} expansion, deny lists append-only)
+- `internal/config/flags.go` (stdlib flag, repeatable flags, WasSet tracking, --permission-mode and --allow/--deny)
 - `internal/config/runtime.go` (Resolve precedence, ResolveModel incl. faux/scripted special case)
 - `internal/modes/sink.go` (EventSink interface, TextSink: assistant text → stdout, errors → stderr)
 - `internal/modes/sink_json.go` (JSONSink: flattened JSONL event records)
 - `internal/modes/print.go` (RunPrint: subscribe, persist-per-event, sink fan-out, follow-up queueing, usage stats, exit codes)
 - `internal/ai/faux/faux.go` (scripted provider, sync.Once load, script playback)
-- 6 E2E tests: SIGINT abort (exit 130), 2nd SIGINT cleanup, tool call write+persist, JSON JSONL output, follow-ups+stats, stdin pipe implies print mode, usage error exit codes
+- 9 E2E tests: SIGINT abort (exit 130), 2nd SIGINT cleanup, tool call write+persist, JSON JSONL output, follow-ups+stats, stdin pipe implies print mode, usage error exit codes, permission deny rules, secret-glob scenarios
 
 ### Built-in Tools (1,500+ LOC)
 - `truncate.go` (head/tail truncation, UTF-8 boundaries)
@@ -220,17 +233,28 @@
 - `ids.go` (8-hex entry IDs from uuidv7, collision retry strategy)
 - 8 test files: 38 passing, -race -count=5 stable, 86.6% coverage
 
-### Agent Runtime (3,000+ LOC)
+### Agent Runtime (3,100+ LOC)
 - `agent.go` (Config, Agent type, New, Prompt/Continue/Subscribe methods)
-- `loop.go` (runLoop, inner/outer loop logic, stream handling)
-- `toolexec.go` (executeToolCalls, parallel/sequential dispatch, panic recovery)
+- `loop.go` (runLoop, inner/outer loop logic, stream handling, ToolCallFilter chain)
+- `toolexec.go` (executeToolCalls, filter pipeline, parallel/sequential dispatch, panic recovery)
+- `hooks.go` (Hooks interface, ToolCallFilter interface, OnMessage/AfterTurn/OnContextOverflow optional hooks, Notify for harness events)
 - `events.go` (sealed Event union, event order contract)
 - `messages.go` (AgentMessage union, ModelMessage, BashExecution, CompactionSummary)
 - `queue.go` (boundedQueue, DrainAll/DrainOne modes)
 - `retry.go` (classifyError, retryDelay, jitter + retry-after)
 - `sysprompt.go` (BuildSystemPrompt, tool definitions, context file embedding)
-- `hooks.go` (Hooks interface, OnMessage/AfterTurn/OnContextOverflow optional hooks, Notify for harness events)
 - `main_test.go` (test helpers, scripted stream runner)
+
+### Permission Engine (550+ LOC)
+- `policy.go` (Mode enum, Category mapping, Rule struct + parse, Policy assembly, rule-matching logic)
+- `engine.go` (Engine: Decide decision pipeline, mode defaults table, ask escalation)
+- `ask.go` (AskRequest, AskDecision enum, Asker interface, HeadlessAsker impl)
+- `callinfo.go` (CallInfo: tool category/command/path extraction from ToolCall)
+- `preview.go` (Preview generation: edit dry-run diffs via Myers diff, write/bash/mcp summary)
+- `diff.go` (Line-based Myers diff, unified format emitter)
+- `globmatch.go` (Bash command wildcard match, path doublestar match via bmatcuk package)
+- `grants.go` (Grant store: in-memory session grants, generalization rules)
+- 3 test files: 12 tests covering decision matrix, rule parsing, secret-glob detection, 90.9% coverage
 
 ### Compaction (750+ LOC)
 - `estimator.go` (Estimator interface, UsageAnchoredEstimator, FallbackEstimator for post-compaction staleness)
@@ -275,6 +299,7 @@
 Model        ai.Model              // Required: model ID + provider
 Tools        *tools.Registry       // Default: empty registry
 Hooks        Hooks                 // Default: no-op
+Filters      []ToolCallFilter      // Default: nil (permission engine can install)
 SystemPrompt string                // Default: empty (BuildSystemPrompt fills)
 StreamOpts   ai.StreamOptions      // Default: empty (provider decides)
 MaxTurns     int                   // Default: 80 (0 = unlimited, <0 = 80)
@@ -283,6 +308,14 @@ SteerDrain   DrainMode             // Default: DrainAll
 Stream       StreamFunc            // Default: registryStream (provider lookup)
 Log          *slog.Logger          // Default: slog.Default()
 History      []AgentMessage        // Default: nil (session resume seeding, Phase 7)
+```
+
+**Permission Settings** (internal/config via ~/.mixi/settings.json):
+```
+permissions.mode                   // plan | prompt | auto-edit | yolo; default: prompt
+permissions.allow[]                // Allow rules (bash(prefix*), read/write/edit(glob), mcp__*)
+permissions.deny[]                 // Deny rules (same syntax; deny appends across layers)
+permissions.denyPatterns[]          // Bash command regex blacklist; default: none
 ```
 
 **Compaction Settings** (internal/config via ~/.mixi/settings.json):
@@ -309,14 +342,15 @@ Observer     FileObserver          // Optional: tracks read/write/edit operation
 
 1. **Provider lookup:** `ai.Resolve(model.API)` → error if not registered
 2. **Tool dispatch:** `tools.Registry.Get(callName)` → nil if not found (error result)
-3. **Schema validation:** `schema.Compile(tool.Schema())` → LLM-readable errors on bad args
-4. **Hooks:** called at transform context / get API key / before/after tool call / should stop checkpoints
-5. **Logging:** structured logs to Config.Log
+3. **Permission filter chain:** `Config.Filters` run in order before BeforeToolCall hook; denial is `BlockDecision{Reason: "..."}` sent to model as IsError tool result
+4. **Schema validation:** `schema.Compile(tool.Schema())` → LLM-readable errors on bad args
+5. **Hooks:** called at transform context / get API key / before/after tool call / should stop checkpoints
+6. **Logging:** structured logs to Config.Log
 
 ## Dependencies
 
 **Direct:**
-- `github.com/bmatcuk/doublestar/v4` — glob matching for find.go WalkDir fallback (Phase 5)
+- `github.com/bmatcuk/doublestar/v4` — glob matching for find.go WalkDir fallback (Phase 5), permission engine path globs (Phase 9)
 - `golang.org/x/image` (draw, webp) — image downscale, WebP decode for read_image.go (Phase 5)
 - `github.com/google/uuid` — uuidv7 generation for session IDs (Phase 6)
 - `golang.org/x/sys` — Windows LockFileEx (Phase 6, untested best-effort)
