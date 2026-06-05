@@ -78,6 +78,19 @@ func (jt *JobTable) liveIDs() string {
 	return strings.Join(ids, ", ")
 }
 
+// Live counts jobs whose process has not yet exited (status-bar display).
+func (jt *JobTable) Live() int {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+	n := 0
+	for _, j := range jt.jobs {
+		if !j.finished() {
+			n++
+		}
+	}
+	return n
+}
+
 // KillAll terminates every job's process group; called on agent shutdown.
 func (jt *JobTable) KillAll() {
 	jt.mu.Lock()

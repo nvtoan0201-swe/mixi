@@ -19,6 +19,7 @@ import (
 	"github.com/user/mixi-agent/internal/compact"
 	"github.com/user/mixi-agent/internal/config"
 	"github.com/user/mixi-agent/internal/modes"
+	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
 	"github.com/user/mixi-agent/internal/tools"
 	"github.com/user/mixi-agent/internal/workset"
@@ -89,15 +90,12 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	}
 
 	switch rc.Mode {
-	case config.ModePrint:
-	case config.ModeTUI:
-		fmt.Fprintln(stderr, "mixi: interactive TUI is not yet available; run a prompt with -p")
-		return modes.ExitUsage
+	case config.ModePrint, config.ModeTUI:
 	default:
 		fmt.Fprintf(stderr, "mixi: %s mode is not yet available\n", rc.Mode)
 		return modes.ExitUsage
 	}
-	if rc.Prompt == "" {
+	if rc.Mode == config.ModePrint && rc.Prompt == "" {
 		fmt.Fprintln(stderr, "mixi: print mode needs a prompt (-p \"...\" or piped stdin)")
 		return modes.ExitUsage
 	}
@@ -106,7 +104,11 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		return modes.ExitUsage
 	}
 
-	log := newLogger(stderr, rc.LogLevel)
+	// TUI mode owns the terminal: logs must never hit stdout/stderr, only a
+	// file (full observability wiring is a later concern — the guard is not).
+	logW, closeLog := logWriter(rc, stderr)
+	defer closeLog()
+	log := newLogger(logW, rc.LogLevel)
 	store, err := openSession(rc, cwd, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: %v\n", err)
@@ -138,7 +140,14 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	hooks := ctrl.Hooks()
 	hooks.GetAPIKey = apiKeyFromEnv
 
-	eng, err := buildPermissionEngine(rc, cwd)
+	// The TUI answers permission asks through a modal; the asker publishes on
+	// the agent bus once the agent exists (notifier breaks the cycle).
+	var notifier agentNotifier
+	var asker perm.Asker
+	if rc.Mode == config.ModeTUI {
+		asker = perm.NotifyAsker{Notify: notifier.publish}
+	}
+	eng, err := buildPermissionEngine(rc, cwd, asker)
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: %v\n", err)
 		return modes.ExitUsage
@@ -156,10 +165,14 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		Log:          log,
 	})
 	ctrl.SetNotify(a.Notify)
+	notifier.set(a)
 
 	stopSignals := handleSignals(a, jobs, store)
 	defer stopSignals()
 
+	if rc.Mode == config.ModeTUI {
+		return runTUI(a, eng, ctrl, store, jobs, rc, stderr)
+	}
 	return modes.RunPrint(context.Background(), modes.PrintDeps{
 		Agent: a, Out: stdout, ErrOut: stderr, Log: log,
 	}, modes.PrintOptions{
@@ -168,6 +181,23 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		JSON:       rc.OutputJSON,
 		PrintStats: rc.PrintStats,
 	})
+}
+
+// logWriter picks the slog destination: stderr for headless modes, a file
+// (or discard) for the TUI so the renderer owns the terminal exclusively.
+func logWriter(rc *config.RuntimeConfig, stderr io.Writer) (io.Writer, func()) {
+	if rc.Mode != config.ModeTUI {
+		return stderr, func() {}
+	}
+	if err := os.MkdirAll(rc.SessionDir, 0o700); err != nil {
+		return io.Discard, func() {}
+	}
+	f, err := os.OpenFile(filepath.Join(rc.SessionDir, "mixi.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return io.Discard, func() {}
+	}
+	return f, func() { f.Close() }
 }
 
 // handleSignals maps SIGINT to a graceful abort (the run ends with exit

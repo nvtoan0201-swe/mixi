@@ -146,6 +146,42 @@ func (a *Agent) Steer(msg AgentMessage) error { return a.steering.Push(msg) }
 // FollowUp queues a message that extends the run when it would stop.
 func (a *Agent) FollowUp(msg AgentMessage) error { return a.followUp.Push(msg) }
 
+// SetModel switches the model for subsequent runs; the active run (if any)
+// keeps the model it started with.
+func (a *Agent) SetModel(m ai.Model) {
+	a.mu.Lock()
+	a.cfg.Model = m
+	a.mu.Unlock()
+}
+
+// Model returns the model used for the next run.
+func (a *Agent) Model() ai.Model {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.Model
+}
+
+// SetThinking adjusts the thinking level for subsequent runs.
+func (a *Agent) SetThinking(level ai.ThinkingLevel) {
+	a.mu.Lock()
+	a.cfg.StreamOpts.Thinking = level
+	a.mu.Unlock()
+}
+
+// Thinking returns the thinking level used for the next run.
+func (a *Agent) Thinking() ai.ThinkingLevel {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.StreamOpts.Thinking
+}
+
+// Running reports whether a run is active.
+func (a *Agent) Running() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.running
+}
+
 // Abort cancels the active run, if any.
 func (a *Agent) Abort() {
 	a.mu.Lock()
@@ -168,8 +204,9 @@ func (a *Agent) run(ctx context.Context, initial []AgentMessage) error {
 	a.running = true
 	a.cancel = cancel
 	history := append([]AgentMessage(nil), a.messages...)
-	a.mu.Unlock()
 
+	// Snapshot config under the lock: SetModel/SetThinking may run
+	// concurrently and must only affect the next run, never this one.
 	deps := &loopDeps{
 		Stream:       a.cfg.Stream,
 		Tools:        a.cfg.Tools,
@@ -185,6 +222,7 @@ func (a *Agent) run(ctx context.Context, initial []AgentMessage) error {
 		Steering:     a.steering,
 		FollowUp:     a.followUp,
 	}
+	a.mu.Unlock()
 
 	newMsgs := a.safeRunLoop(runCtx, deps, history, initial)
 
@@ -205,9 +243,9 @@ func (a *Agent) safeRunLoop(ctx context.Context, deps *loopDeps, history, initia
 			stack := string(buf[:runtime.Stack(buf, false)])
 			a.log.Error("agent: run loop panicked", "panic", r, "stack", stack)
 			synthetic := ModelMessage{Msg: ai.AssistantMessage{
-				API:          a.cfg.Model.API,
-				Provider:     a.cfg.Model.Provider,
-				Model:        a.cfg.Model.ID,
+				API:          deps.Model.API,
+				Provider:     deps.Model.Provider,
+				Model:        deps.Model.ID,
 				StopReason:   ai.StopReasonError,
 				ErrorMessage: fmt.Sprintf("internal error: %v", r),
 				Timestamp:    time.Now().UnixMilli(),

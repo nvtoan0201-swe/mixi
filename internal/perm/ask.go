@@ -29,6 +29,34 @@ type Asker interface {
 	Ask(ctx context.Context, req AskRequest) (AskDecision, error)
 }
 
+// PendingAsk pairs a request with the channel its answer travels back on.
+// Interactive frontends (TUI modal, RPC forwarder) receive it as an event
+// payload and send exactly one decision; Reply is buffered so the answer
+// never blocks the UI.
+type PendingAsk struct {
+	Req   AskRequest
+	Reply chan AskDecision
+}
+
+// NotifyAsker bridges Ask onto an event-driven frontend: each request is
+// handed to Notify (e.g. published on the agent event bus) and the call
+// blocks until the frontend answers or ctx is cancelled. Cancellation
+// (run aborted, UI gone) denies — the safe default.
+type NotifyAsker struct {
+	Notify func(PendingAsk)
+}
+
+func (n NotifyAsker) Ask(ctx context.Context, req AskRequest) (AskDecision, error) {
+	p := PendingAsk{Req: req, Reply: make(chan AskDecision, 1)}
+	n.Notify(p)
+	select {
+	case d := <-p.Reply:
+		return d, nil
+	case <-ctx.Done():
+		return AskDeny, ctx.Err()
+	}
+}
+
 // HeadlessAsker answers for sessions with no one to ask (print mode).
 // Default is deny; AllowAll is set when the user explicitly chose a
 // permissive mode (yolo/auto-edit), turning every ask into an approval.
