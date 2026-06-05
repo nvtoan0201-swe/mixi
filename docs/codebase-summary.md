@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 11 complete (MCP Client)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 12 complete (Extension Host)
 
 ## Package Overview
 
@@ -25,6 +25,7 @@
 | `internal/tui` | Bubble Tea interactive mode: event bridge, streaming transcript viewport, tool cards (with colorized diffs), approval modal, status bar, input editor (history ring + slash autocomplete + $EDITOR), keymap, slash commands | `App`, `model`, `bridge`, `transcript`, `msgview`, `toolview`, `approval`, `editor`, `statusbar`, `keymap` |
 | `internal/wire` | JSONL framing (1MiB line cap, atomic writes, optional write deadline) — shared transport seam for subprocess extensions (phase 12) and RPC (phase 14) | `FrameWriter`, `FrameReader`, `MaxLineLen` |
 | `internal/mcp` | MCP client for tool integration: protocol negotiation (2025-06-18 with 2025-03-26 fallback), stdio transport (Setpgid, stderr→DEBUG, SIGTERM→SIGKILL), id-tracked request routing, per-call timeouts (30s default), malformed-line rate-cap (10/min), tool adapter (names `mcp__<server>__<tool>`, schema passthrough w/ permissive fallback) | `Client`, `Manager`, `Transport`, `ServerConfig` |
+| `internal/ext` | Extension host: subprocess JSONL-RPC server discovery (settings + executables in ~/.mixi/extensions/ and .mixi/extensions/), hello handshake (5s timeout), per-extension FIFO event queue (cap 256, drop-oldest), blocking tool_call gate (5s budget, 3-strike disable), action API (send_message, append_entry, set_status, notify, ask_select, register_command), crash isolation (restart backoff 1s/2s/4s), 1MiB wire cap violation or 10 malformed msgs/min → Disabled, protocol:1 experimental mark | `Host`, `Extension`, `Config`, `Protocol`, `Supervisor` |
 
 ## Architecture Layers
 
@@ -71,8 +72,17 @@
 - **Server config** (`internal/mcp/server_config.go`): decode from settings.json mcpServers block, ${VAR} env expansion, timeoutMs per-server override
 - **Tool adapter** (`internal/mcp/tooladapter.go`): wraps MCP tools as internal/tools.Tool; names as `mcp__<server>__<tool>`, description prefix `[mcp:<server>] `, schema passthrough with permissive fallback (uncompilable schemas don't crash)
 
+### Layer 2d: Extension Host (`internal/ext`)
+- **Extension host** (`internal/ext/host.go`): discovery from settings block + ~/.mixi/extensions/ + .mixi/extensions/, per-extension lifecycle, event fan-out (FIFO queue cap 256, drop-oldest+WARN), blocking tool_call gate (sequential ordering, 5s per response, 3-strike→Disabled)
+- **Extension lifecycle** (`internal/ext/extension.go`, `internal/ext/supervisor.go`): startup (spawn → hello handshake 5s timeout), state machine (Starting/Ready/Degraded/Crashed/Disabled), restart backoff (1s/2s/4s), 3-strike disable, in-flight call recovery (fail-open on crash)
+- **Protocol** (`internal/ext/protocol.go`): version-1 experimental mark (sign-off phase 16); hello/ready/message types; event subscription (ready, session_start, agent_start/message_update/message_end/tool_start/tool_end, agent_end, session_shutdown, notice)
+- **Action API** (`internal/ext/actions.go`, `internal/ext/api.go`): send_message (steer/followUp/nextTurn), append_entry (session), set_status (TUI status bar), notify (notice + stderr in headless), ask_select (headless→first option+WARN), register_command (hello-only)
+- **Tool bridge** (`internal/ext/toolbridge.go`, `internal/ext/adopt.go`): tool_call blocking gate (sequential by registration order, 5s timeout, rejects on ≥3 strikes), tool result round-trip via wire protocol, permission engine integration (ext tools match `ext__*` pattern)
+- **Process management** (`internal/ext/proc.go`, `internal/ext/gate.go`): Setpgid spawn (Unix), stderr merge, SIGKILL on shutdown (3s grace), malformed-line detector (≥10/min→Disabled), wire cap violation (1MiB)
+- **Configuration** (`internal/ext/config.go`): decode from settings.json extensions block, ${VAR} expansion, discovery order (configured first, then filesystem)
+
 ### Layer 3: Agent Runtime (`internal/agent`)
-- **ToolCallFilter interface:** sits ahead of BeforeToolCall hook; permission engine implements this for filter-first pipeline; filters fail closed (error on filter crash → tool denied)
+- **ToolCallFilter interface:** sits ahead of BeforeToolCall hook; permission engine + extension host implement this for filter-first pipeline; filters fail closed (error on filter crash → tool denied). Extension host filters here before gate deadlines apply.
 - **Two-level loop structure:**
   1. **Outer:** follow-up extend a run; loop restarts when follow-ups enqueued
   2. **Inner:** stream assistant turn → extract tool calls → filter tool calls (ToolCallFilter chain) → dispatch tools → collect results → advance turn counter
@@ -305,6 +315,22 @@
 - `internal/mcp/tooladapter.go` (adapter to internal/tools.Tool interface)
 - Tests: chaos suite vs fake compiled server, everything-server conformance (13 tools live)
 
+### Extension Host (1,000+ LOC)
+- `internal/ext/protocol.go` (version:1 experimental, hello/ready/message types, event subscription)
+- `internal/ext/host.go` (discovery loop, spawn/handshake, event fan-out FIFO, blocking gate pipeline)
+- `internal/ext/extension.go` (per-ext state machine, queue, strike counter)
+- `internal/ext/supervisor.go` (lifecycle CONFIGURED→INITIALIZING→READY⇄RESTARTING→FAILED/CLOSED, backoff 1s/2s/4s, 3-strike disable)
+- `internal/ext/actions.go` (send_message, append_entry, set_status, notify, ask_select, register_command)
+- `internal/ext/toolbridge.go` (blocking gate sequential ordering, 5s response timeout, ≥3-strike demote)
+- `internal/ext/config.go` (settings.json extensions block decode, ${VAR} expansion)
+- `internal/ext/proc.go` (Setpgid spawn, stderr merge, graceful shutdown SIGKILL)
+- `internal/ext/gate.go` (gate state machine, timeout strike logic)
+- `cmd/mixi/ext_setup.go` (discovery + wiring before agent build)
+- `cmd/mixi/e2e_extensions_test.go` (permission_gate example end-to-end, --no-extensions flag verification)
+- `examples/extensions/permission_gate/main.go` (Go sample: blocks rm -rf via tool_call)
+- `examples/extensions/status_line/status_line.sh` (Shell sample: sets footer status via set_status)
+- Tests: 6 test files, conformance suite (handshake, gate block, mutation chain, timeout, crash/restart/disable), wire cap violation, malformed-msg rate cap
+
 ### AI Layer (500+ LOC)
 - `types.go` (Content/Message/StreamEvent sealed unions, Model, Context)
 - `json.go` (JSON marshal/unmarshal with discriminators)
@@ -388,6 +414,21 @@ mcpServers: {
 
 **CLI flag:**
 - `--no-mcp` — skip MCP manager initialization, disable all MCP tool registration
+
+**Extension Settings** (internal/config via ~/.mixi/settings.json):
+```
+extensions: {
+  "ext-name": {
+    "command": "binary-name",           // required: executable path
+    "args": ["arg1", "arg2"],           // optional: args to pass
+    "env": {"VAR": "${VAR_NAME}"}       // optional: ${VAR} expansion for env vars
+  }
+}
+```
+Discovery order: settings block first (configured), then ~/.mixi/extensions/, then .mixi/extensions/ (project-local).
+
+**CLI flag:**
+- `--no-extensions` — skip extension host initialization, disable all extension discovery and loading
 
 **Tool Observer** (tools.Options):
 ```go

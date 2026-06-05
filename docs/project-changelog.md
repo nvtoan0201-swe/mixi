@@ -417,3 +417,47 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - CLI --no-mcp flag to disable MCP initialization
 
 **Summary:** MCP client complete. `mixi` now integrates stdio-based MCP servers with per-call timeouts, crash detection, graceful shutdown, and tool lifecycle management. Tools register dynamically post-startup and appear next turn. TUI /mcp command shows server status; CLI --no-mcp flag disables MCP. Unblocks extension host (phase 12) and RPC mode (phase 14) which reuse wire transport and MCP supervisor.
+
+## Phase 12: Extension Host (2026-06-05)
+
+### Extension Host Package (`internal/ext`)
+- Implement subprocess JSONL-RPC extension host: discovery from settings block + ~/.mixi/extensions/ + .mixi/extensions/
+- Build hello handshake (5s timeout, kill if stuck), validation (tool conflict resolution: built-ins win, first-registered wins)
+- Implement per-extension lifecycle: state machine (Starting/Ready/Degraded/Crashed/Disabled), restart backoff (1s/2s/4s), 3-strike disable
+- Add event fan-out: per-extension FIFO queue (cap 256, drop-oldest+WARN for non-blocking events), blocking tool_call gate (sequential ordering by registration, 5s response timeout per extension)
+- Build protocol version:1 (marked experimental; sign-off phase 16): hello/ready/message types, event subscription (ready, session_start, agent_{start/message_update/message_end/tool_start/tool_end}, agent_end, session_shutdown, notice)
+- Implement action API: send_message (steer/followUp/nextTurn), append_entry (session storage), set_status (TUI status bar), notify (notice + stderr in headless), ask_select (headless→first option+WARN), register_command (hello-only)
+- Add blocking-gate pipeline: ToolCallFilter integration (sequential ordering), ext tools matched via `ext__*` pattern, ≥3 strike timeouts demote extension to non-blocking
+- Build process management: Setpgid spawn (Unix), stderr merge to logs, graceful shutdown (3s grace then SIGKILL group)
+- Implement resilience: crash → restart (no mid-flight tool stall), 1MiB wire cap violation → Disabled, 10+ malformed msgs/min → Disabled, isolation prevents extension issues from blocking agent
+- Add configuration: settings.json extensions block decode, ${VAR} env expansion, discovery priority
+- 11 source files + 6 test files + 2 example extensions; conformance suite (handshake, gate block, mutation chain, timeout strikes, crash/restart/disable, tool round-trip)
+
+### Example Extensions
+- `permission_gate.go` (Go): demonstrates tool_call blocking gate; blocks `rm -rf` command end-to-end via gate architecture
+- `status_line.sh` (Shell): demonstrates set_status action; updates footer status in TUI
+
+### CLI & TUI Integration (`cmd/mixi`, `internal/tui`)
+- Add startExtensions (ext_setup.go): discovery before agent build (ext tools reach registry + system prompt), bounded startup wait
+- Wire bindExtensions: connects action API (send_message → agent queues, append_entry → session, set_status → TUI, notify → stderr/TUI notice)
+- Add --no-extensions flag to skip extension host initialization
+- Integrate ext tools into permission engine (tool names match `ext__*`)
+- TUI status bar segments for extension state (Ready/Crashed/Disabled per extension)
+- Ext commands appear in autocomplete (command names registered via register_command)
+- Event filter sits after permission engine in tool call pipeline
+
+### Test Results & Quality
+- `internal/ext`: 6 test files covering conformance (handshake, gate block, timeout strikes, crash restart/disable), tool round-trip, wire cap violation
+- CLI e2e: permission_gate blocks rm -rf with yolo mode attempting; --no-extensions skips discovery
+- Full repo: `go test -race ./...` green, all tests pass
+
+### Key Deliverables
+- Extension host discovers and boots subprocesses with hello handshake
+- Blocking tool_call gate prevents extensions from stalling agent (5s timeout, 3-strike disable)
+- Action API bridges extensions to agent (send_message), session (append_entry), TUI (set_status/notify/ask_select)
+- Crash isolation: extensions restart on crash, wire cap/malformed-msg violations disable gracefully
+- Protocol versioned 1 (experimental until phase 16 sign-off)
+- Two conformance fixtures (Go + shell examples) demonstrating gate and status_line patterns
+- --no-extensions flag for headless/testing mode
+
+**Summary:** Extension host complete. `mixi` now supports subprocess extensions with JSONL-RPC transport, blocking tool_call gates (preventing hung extensions), action API (send_message/append_entry/set_status/notify/ask_select/register_command), crash isolation (restart backoff + 3-strike disable), and permission engine integration. Extensions register tools and commands; tools participate in gate + permission pipeline. Protocol marked experimental pending phase 16 sign-off. Two examples (permission_gate Go + status_line shell) demonstrate core patterns. Unblocks RPC mode (phase 14) which reuses extension architecture for agent-to-agent communication.

@@ -37,7 +37,8 @@
 - ✓ Permission engine for tool calls
 - ✓ Interactive TUI (Bubble Tea) with permission approval UI
 - ✓ MCP client (stdio) with per-call timeouts and lifecycle management
-- Subprocess extensions (phase 12), RPC mode with permission agent (phase 14)
+- ✓ Subprocess extensions with JSONL-RPC transport, blocking tool_call gates, action API
+- RPC mode with permission agent (phase 14)
 - OpenAI provider, observability & replay, fault-injection hardening
 
 ## Architecture
