@@ -461,3 +461,50 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - --no-extensions flag for headless/testing mode
 
 **Summary:** Extension host complete. `mixi` now supports subprocess extensions with JSONL-RPC transport, blocking tool_call gates (preventing hung extensions), action API (send_message/append_entry/set_status/notify/ask_select/register_command), crash isolation (restart backoff + 3-strike disable), and permission engine integration. Extensions register tools and commands; tools participate in gate + permission pipeline. Protocol marked experimental pending phase 16 sign-off. Two examples (permission_gate Go + status_line shell) demonstrate core patterns. Unblocks RPC mode (phase 14) which reuses extension architecture for agent-to-agent communication.
+
+## Phase 13: Observability & Replay (2026-06-05)
+
+### Observability Package (`internal/obs`)
+- Implement structured JSON logging: slog configured for JSON output → `~/.mixi/logs/mixi-<YYYY-MM-DD>.jsonl` with daily rotation (keeps 7 days)
+- Add stderr mirror with configurable level: WARN+ by default; `--verbose` mirrors all records in headless modes (mirrors disabled in TUI)
+- Build log-level resolution: `--log-level debug|info|warn|error` flag and `MIXI_LOG` env var with proper precedence
+- Implement usage tracking: `Tracker` type accumulates per-turn tokens (input/output), cost estimate, model, duration, tool-call count
+- Add `Snapshot.Summary()` shared method for consistent cost/token aggregation across print stats, TUI status bar, and `/cost` command
+- Build session replay: `RunReplay(file, options)` reads JSONL session, synthesizes events, renders plain-text transcript with zero API calls
+- Implement replay pacing: timestamps from recorded entries, gaps capped 2s, `--speed 1x|5x|instant` controls playback rate
+- Add replay truncation: `--until <entryId>` stops rendering at specific entry (useful for stopping mid-session)
+- Support read-only lock on live sessions: `replay` mode opens with read-only flag, allows inspection without blocking active session
+
+### Agent Loop Integration
+- Emit INFO records on turn lifecycle: turn_id, model, stop_reason, tool_calls count, latency_ms
+- Emit INFO records per tool execution: tool name, call_id, is_error flag, latency_ms
+- Wire Tracker into event loop via `OnTurnEnd` hook: accumulates usage from provider-returned tokens
+
+### CLI & Mode Integration
+- Add `mixi replay <session.jsonl>` subcommand: dispatches before session/API-key validation (replay-only mode)
+- Wire log init at start of realMain (before TUI launches)
+- Add `session_id` field to all logs after session store opens
+- Implement separate EventSink path for print stats: uses Tracker.Totals() instead of per-event snapshots
+- Add `/cost` TUI command: shows per-model usage breakdown (tokens, cost, latency)
+
+### Flags & Configuration
+- Add `--log-level debug|info|warn|error` (default: warn; env MIXI_LOG overridable)
+- Add `--verbose` (mirrors logs to stderr in print/replay; no effect in TUI)
+- Add `--speed 1x|5x|instant` (replay pacing; enum validated)
+- Add `--until <entryId>` (replay truncation; entry ID prefix-matched)
+- `--print-stats` (existing flag) now uses Tracker for consistent cost calculation
+
+### Test Results & Quality
+- `internal/obs`: 4 test files covering log schema, level precedence, degrade-on-unwritable-dir, mirror toggle, Tracker folding/consistency, in-flight snapshots, replay golden byte-exact, --until truncation, locked-session replay, pacer capping
+- CLI e2e: replay instant/until/missing-file/no-arg, verbose-mirror field check, default-mirror quiet (TUI)
+- Full repo: `go test -race` green; obs 83.7% stmt coverage; all phases pass
+
+### Key Deliverables
+- Structured JSON logging with daily rotation and configurable stderr mirror
+- Per-turn usage tracking: tokens, cost estimate, model, latency; unified across all output channels
+- Session replay subcommand: zero-API-call transcript re-render with pacing control
+- Read-only session lock: replay can inspect live sessions without blocking
+- `/cost` command with per-model breakdown in TUI
+- `--verbose` flag for headless log inspection
+
+**Summary:** Observability layer complete. `mixi` now logs structured JSON to daily rotated files (7-day retention), tracks per-turn token usage and costs, and supports session replay with variable pacing. Replay re-renders conversations as plain-text transcripts without API calls; read-only mode allows analysis of live sessions. TUI `/cost` command shows per-model breakdowns. Log levels and stderr mirroring configurable via flags/env. Unblocks OpenAI provider (phase 15) and fault-injection testing (phase 16).

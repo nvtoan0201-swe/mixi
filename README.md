@@ -111,7 +111,7 @@ echo "what does this repo do?" | ./mixi --output json
 # → Or: --allow 'edit(main.go)' in settings.json for persistent rules
 ```
 
-Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`, `--permission-mode plan|prompt|auto-edit|yolo`, `--allow` (repeatable), `--deny` (repeatable), `--no-mcp` (disable MCP). Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
+Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`, `--permission-mode plan|prompt|auto-edit|yolo`, `--allow` (repeatable), `--deny` (repeatable), `--no-mcp` (disable MCP), `--log-level debug|info|warn|error`, `--verbose` (mirror logs to stderr), `--print-stats` (show usage summary). Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
 
 > **Permission Engine (Phase 9):** Print mode now enforces four permission modes; default (`prompt`) asks for approval on write/execute/mcp calls. Use `--permission-mode auto-edit` for read+write free, or configure persistent rules in `~/.mixi/settings.json` under the `permissions` block.
 
@@ -182,6 +182,34 @@ Modal shows a colorized diff for `edit` calls, and a summary of command+args for
 
 - Session logs go to `<sessiondir>/mixi.log`, never to stdout/stderr
 - Logs are only emitted in verbose debug builds (not by default)
+
+### Session Replay (Phase 13)
+
+```bash
+# Replay a recorded session as a text transcript with zero API calls:
+./mixi replay ~/.mixi/sessions/<cwd-slug>/<date>_<id>.jsonl
+
+# Control replay speed:
+./mixi replay session.jsonl --speed 1x      # Real-time (default)
+./mixi replay session.jsonl --speed 5x      # 5× faster (tool gaps capped at 2s)
+./mixi replay session.jsonl --speed instant # No delays
+
+# Stop at a specific entry:
+./mixi replay session.jsonl --until <entryId>
+
+# Works on live sessions (read-only lock):
+./mixi replay -c session.jsonl  # Replay most recent session (non-blocking read)
+```
+
+`mixi replay` re-renders a JSONL session file as a plain-text transcript, simulating tool execution and thinking blocks without calling any APIs. Useful for post-hoc analysis, documentation, and debugging.
+
+**Logging & Observability (Phase 13):**
+
+- Structured JSON logs: `~/.mixi/logs/mixi-<YYYY-MM-DD>.jsonl` (rotated daily, keeps 7 days)
+- Log level control: `--log-level debug|info|warn|error` (default: warn) or env `MIXI_LOG`
+- `--verbose` mirrors logs to stderr in headless modes (all records in print/replay, WARN+ in TUI)
+- Agent loop logs: turn lifecycle (turn start/end, model, stop_reason, tool_calls, latency_ms), tool execution (tool name, call_id, latency_ms, error flag)
+- Usage tracking per turn: tokens (input/output), cost, model, duration; accessible via `/cost` command in TUI or `--print-stats` in print mode
 
 ### MCP Server Integration (Phase 11)
 

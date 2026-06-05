@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 12 complete (Extension Host)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 13 complete (Observability & Replay)
 
 ## Package Overview
 
@@ -16,6 +16,7 @@
 | `internal/agent/agenttest` | Scripted test provider (fake stream generator) | `FakeProvider` |
 | `internal/config` | Settings files + CLI flags with precedence resolution; runtime config assembly | `Settings`, `Flags`, `RuntimeConfig`, `Resolve` |
 | `internal/modes` | Headless run modes (print now; RPC/replay stubbed); EventSink abstraction | `EventSink`, `TextSink`, `JSONSink`, `RunPrint` |
+| `internal/obs` | Structured JSON logging (slog → ~/.mixi/logs/mixi-<date>.jsonl, daily rotation keep 7), usage tracking per turn (tokens, cost, model, latency), session replay with pacing (1x/5x/instant, entry-id truncation) | `Setup`, `Tracker`, `Snapshot`, `RunReplay`, `ReplayOptions` |
 | `internal/schema` | JSON-Schema validation, coercion, LLM-readable errors | `Compile`, `Coerce`, `ErrFormatter` |
 | `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup); Registry now concurrent-safe (RWMutex) for late MCP tool registration | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
 | `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
@@ -37,7 +38,7 @@
 - **Print mode** (`internal/modes/print.go`): subscribe to agent events, persist per-event to session storage, fan-out to EventSink (text or JSONL), queue follow-ups, emit exit codes (0/1/2/130)
 - **EventSink abstraction** (`internal/modes/sink.go`, `sink_json.go`): TextSink (final assistant text to stdout, errors to stderr), JSONSink (flattened JSONL per event)
 - **TUI mode** (`internal/tui/`, `cmd/mixi/run_tui.go`): Bubble Tea application running on tty (auto-default when stdin is terminal); event bridge pumps agent.Subscribe() into tea model; approval modal answers permission engine via perm.PendingAsk.Reply channel
-- **TUI components** (10 sub-packages): root model + key handling, transcript viewport with sticky-bottom, message/tool views (streaming states, glamour markdown, diff rendering), approval modal overlay, input editor (history ring ×50, slash autocomplete, Ctrl+G external editor), status bar (live model/think/ctx%/$cost/mode/jobs), keymap table (27 bindings), slash command registry (includes `/mcp` status + `/mcp reconnect <name>`)
+- **TUI components** (10 sub-packages): root model + key handling, transcript viewport with sticky-bottom, message/tool views (streaming states, glamour markdown, diff rendering), approval modal overlay, input editor (history ring ×50, slash autocomplete, Ctrl+G external editor), status bar (live model/think/ctx%/$cost from obs.Tracker/mode/jobs), keymap table (27 bindings), slash command registry (includes `/cost` with per-model breakdown + `/mcp` status)
 - **TUI asker** (`internal/perm/ask.go` + `internal/tui/` adapter): replaces HeadlessAsker; PendingAsk channels approval requests to modal; NotifyAsker is the channel-driven asker interface (reused by RPC phase 14)
 - **Signal handling** (`cmd/mixi/main.go`): SIGINT → graceful abort (exit 130 in print, Esc interrupt in TUI), 2nd SIGINT/SIGTERM → cleanup + exit
 - **Session wiring** (`cmd/mixi/setup.go`): openSession per flags (fresh / -c / --resume / --fork / --no-save); historyFromSession seeds agent.History from active path
@@ -101,6 +102,7 @@
 - **Hooks:** `TransformContext`, `GetAPIKey`, `BeforeToolCall`, `AfterToolCall`, `ShouldStop` — applied per turn/call
 - **Tool execution:** parallel by default, sequential if any tool declares `ExecSequential` or config forces it
 - **Panic recovery:** tool panics → error result, run continues
+- **Structured logging** (phase 13): INFO records for turn lifecycle (turn, model, stop_reason, tool_calls, latency_ms) and tool execution (tool, call_id, is_error, latency_ms); logged via obs package to daily JSONL + stderr mirror per config
 
 ### Layer 4: Built-in Tools (`internal/tools`)
 
@@ -229,6 +231,16 @@
 - `internal/modes/print.go` (RunPrint: subscribe, persist-per-event, sink fan-out, follow-up queueing, usage stats, exit codes)
 - `internal/ai/faux/faux.go` (scripted provider, sync.Once load, script playback)
 - 9 E2E tests: SIGINT abort (exit 130), 2nd SIGINT cleanup, tool call write+persist, JSON JSONL output, follow-ups+stats, stdin pipe implies print mode, usage error exit codes, permission deny rules, secret-glob scenarios
+
+### Observability & Replay (600+ LOC)
+- `internal/obs/log.go` (Setup: slog JSON formatting → ~/.mixi/logs/mixi-<YYYY-MM-DD>.jsonl, daily rotation keep 7, stderr mirror level control, --log-level + MIXI_LOG env resolution, TUI-specific no-mirror behavior)
+- `internal/obs/usage.go` (Tracker: per-turn {turn, model, usage, durMs, toolCalls}, session totals + byModel breakdown, in-flight pending snapshot; UsageSink interface for EventSink + TUI statusbar integration)
+- `internal/obs/replay.go` (RunReplay: JSONL entry load, entry→event synthesis, read-only session open, no API calls)
+- `internal/obs/replay_render.go` (Replay rendering: plain-text transcript, assistant messages + tool execution simulation, thinking block rendering, pacer with recorded-timestamp gaps capped 2s)
+- `cmd/mixi/replay.go` (runReplay: subcommand entry point, ReplayOptions wiring)
+- `internal/config/flags.go` (--speed 1x|5x|instant, --until <entryId>, --verbose, --log-level; enum validation)
+- `cmd/mixi/main.go` (log setup first in realMain, session_id field after store open, replay dispatch before session/API-key checks)
+- 4 test files: schema validation, level precedence, degrade-on-unwritable-dir, tracker folding, replay byte-exact golden, --until truncation, locked-session replay, pacer
 
 ### Built-in Tools (1,500+ LOC)
 - `truncate.go` (head/tail truncation, UTF-8 boundaries)
