@@ -138,9 +138,16 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	hooks := ctrl.Hooks()
 	hooks.GetAPIKey = apiKeyFromEnv
 
+	eng, err := buildPermissionEngine(rc, cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "mixi: %v\n", err)
+		return modes.ExitUsage
+	}
+
 	a := agent.New(agent.Config{
 		Model:        rc.Model,
 		Tools:        reg,
+		Filters:      []agent.ToolCallFilter{permissionFilter{eng}},
 		SystemPrompt: systemPrompt(f, reg, cwd),
 		StreamOpts:   streamOpts(rc, store),
 		MaxTurns:     maxTurns(rc.MaxTurns),
@@ -149,10 +156,6 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 		Log:          log,
 	})
 	ctrl.SetNotify(a.Notify)
-
-	// The permission engine arrives in a later phase; until then every tool
-	// call runs unrestricted regardless of --permission-mode.
-	fmt.Fprintln(stderr, "WARN: permissions are not yet enforced — every tool call runs unrestricted")
 
 	stopSignals := handleSignals(a, jobs, store)
 	defer stopSignals()

@@ -21,9 +21,12 @@ const DefaultMaxTurns = 80
 
 // Config assembles an Agent. Zero values get sensible defaults.
 type Config struct {
-	Model        ai.Model
-	Tools        *tools.Registry
-	Hooks        Hooks
+	Model ai.Model
+	Tools *tools.Registry
+	Hooks Hooks
+	// Filters gate every tool call before hooks and validation; the
+	// permission engine is wired here.
+	Filters      []ToolCallFilter
 	SystemPrompt string
 	StreamOpts   ai.StreamOptions
 	// MaxTurns: <0 = unlimited, 0 = DefaultMaxTurns.
@@ -171,6 +174,7 @@ func (a *Agent) run(ctx context.Context, initial []AgentMessage) error {
 		Stream:       a.cfg.Stream,
 		Tools:        a.cfg.Tools,
 		Hooks:        a.cfg.Hooks,
+		Filters:      a.cfg.Filters,
 		Sink:         a.bus.Publish,
 		Log:          a.log,
 		Model:        a.cfg.Model,

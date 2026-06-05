@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/user/mixi-agent/internal/ai"
@@ -12,6 +13,15 @@ import (
 // surfaced to the model as an IsError tool result.
 type BlockDecision struct {
 	Reason string
+}
+
+// ToolCallFilter sits on the tool-call path ahead of the BeforeToolCall
+// hook. Implemented by the permission engine adapter and (later) the
+// extension host: one pipeline, two members. A filter may rewrite args or
+// block the call; a block's Reason is sent to the model verbatim, so
+// filters phrase it as a complete sentence ("Permission denied: ...").
+type ToolCallFilter interface {
+	FilterToolCall(ctx context.Context, call ai.ToolCall) (args json.RawMessage, block *BlockDecision, err error)
 }
 
 // TurnUpdate lets PrepareNextTurn swap the model or thinking level for the

@@ -21,8 +21,10 @@ func TestE2EToolCallWritesFileAndPersistsSession(t *testing.T) {
 		toolCallTurn("call-1", "write", map[string]any{"path": "hello.txt", "content": "hi"}),
 		textTurn("wrote hello.txt"),
 	)
+	// auto-edit: headless writes need an explicitly permissive mode now that
+	// the permission engine gates every tool call.
 	code, stdout, stderr := runMixi(t, script, work, "",
-		"-p", "create hello.txt containing hi",
+		"-p", "create hello.txt containing hi", "--permission-mode", "auto-edit",
 		"--model", "faux/scripted", "--session-dir", sess)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, stderr)

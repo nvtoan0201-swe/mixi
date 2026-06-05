@@ -116,13 +116,30 @@ func runOneCall(ctx context.Context, d *loopDeps, call ai.ToolCall) ai.ToolResul
 	return invokeTool(ctx, d, tool, prepared)
 }
 
-// prepareCall resolves the tool, applies the BeforeToolCall hook, and
+// prepareCall resolves the tool, runs the filter pipeline (permission
+// engine, extension host) and the BeforeToolCall hook, then
 // validates+coerces arguments. A non-nil result is a finalized failure.
 func prepareCall(ctx context.Context, d *loopDeps, call ai.ToolCall) (tools.Tool, ai.ToolCall, *ai.ToolResultMessage) {
 	tool, ok := d.Tools.Get(call.Name)
 	if !ok {
 		r := errorResult(call, fmt.Sprintf("Unknown tool %q", call.Name))
 		return nil, call, &r
+	}
+	for _, f := range d.Filters {
+		args, block, err := f.FilterToolCall(ctx, call)
+		if err != nil {
+			// A broken filter must fail closed: letting the call through
+			// would turn a filter bug into a permission bypass.
+			r := errorResult(call, fmt.Sprintf("Tool call rejected: filter failed: %v", err))
+			return nil, call, &r
+		}
+		if block != nil {
+			r := errorResult(call, block.Reason)
+			return nil, call, &r
+		}
+		if args != nil {
+			call.Args = args
+		}
 	}
 	if block := d.Hooks.beforeToolCall(ctx, d.Log, call); block != nil {
 		r := errorResult(call, "Tool call blocked: "+block.Reason)

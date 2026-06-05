@@ -21,7 +21,8 @@ type loopDeps struct {
 	Stream       StreamFunc
 	Tools        *tools.Registry
 	Hooks        Hooks
-	Sink         func(Event) // event fan-out (bus.Publish in production)
+	Filters      []ToolCallFilter // run before BeforeToolCall, in order
+	Sink         func(Event)      // event fan-out (bus.Publish in production)
 	Log          *slog.Logger
 	Model        ai.Model
 	Opts         ai.StreamOptions
