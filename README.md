@@ -35,7 +35,7 @@
 - ✓ CLI with print mode
 - ✓ Context compaction & working set
 - ✓ Permission engine for tool calls
-- Interactive TUI (Bubble Tea) with permission approval UI
+- ✓ Interactive TUI (Bubble Tea) with permission approval UI
 - MCP client (stdio), subprocess extensions, RPC mode with permission agent
 - OpenAI provider, observability & replay, fault-injection hardening
 
@@ -111,6 +111,72 @@ Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id
 
 > **Permission Engine (Phase 9):** Print mode now enforces four permission modes; default (`prompt`) asks for approval on write/execute/mcp calls. Use `--permission-mode auto-edit` for read+write free, or configure persistent rules in `~/.mixi/settings.json` under the `permissions` block.
 
+### Run (interactive TUI mode)
+
+```bash
+go build -o mixi ./cmd/mixi
+
+# Launch TUI mode automatically when connected to a terminal (tty):
+./mixi
+
+# Force TUI mode explicitly:
+./mixi --mode tui
+
+# TUI with custom permission mode:
+./mixi --permission-mode auto-edit
+
+# Continue previous session in TUI:
+./mixi -c
+```
+
+**Keymap (TUI mode):**
+
+| Binding | Action |
+|---------|--------|
+| `Enter` | Send prompt or steer mid-run |
+| `Alt+Enter` | Queue follow-up question |
+| `Escape` | Interrupt running agent |
+| `Ctrl+C` (double) | Quit TUI |
+| `Shift+Tab` | Toggle thinking block collapse |
+| `Ctrl+P` | Cycle through available models |
+| `Ctrl+O` | Expand all tool cards (toggle) |
+| `Ctrl+T` | Expand all thinking blocks (toggle) |
+| `Ctrl+G` | Open input in `$EDITOR` |
+| `Ctrl+L` | Redraw screen |
+| `Up` / `Down` | Cycle through input history |
+| `PgUp` / `PgDn` | Scroll transcript |
+| Mouse wheel | Scroll transcript |
+
+**Slash commands:**
+
+Prefix input with `/` to trigger built-in commands:
+- `/model` — show current model
+- `/compact` — trigger context compaction
+- `/pin <label>` — pin entries for retention
+- `/tree` — show session tree
+- `/permissions` — list active permission rules
+- `/mode` — show current permission mode
+- `/name <label>` — label the session
+- `/cost` — show token usage and cost breakdown
+- `/quit` — gracefully exit
+
+Commands like `/new`, `/resume`, `/fork` are available via CLI flags (see above).
+
+**Permission approval modal (interactive):**
+
+When the agent needs approval for a tool call:
+- `a` — Deny this call
+- `d` — Deny all similar calls
+- `A` — Always allow this call (session grant)
+- `Escape` — Dismiss modal and interrupt
+
+Modal shows a colorized diff for `edit` calls, and a summary of command+args for `bash`/`mcp`.
+
+**TUI logging:**
+
+- Session logs go to `<sessiondir>/mixi.log`, never to stdout/stderr
+- Logs are only emitted in verbose debug builds (not by default)
+
 ## Design Highlights
 
 - **Crash-safe sessions** — sessions are append-only JSONL trees; a `kill -9` mid-write is recovered on load, and files without a valid session header are never touched
@@ -122,7 +188,7 @@ Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id
 
 ```
 mixi-agent/
-├── cmd/mixi/          # CLI entry point (print mode, signals, session wiring, permissions)
+├── cmd/mixi/          # CLI entry point (print mode, TUI, signals, session wiring, permissions)
 ├── internal/
 │   ├── ai/            # core types, provider registry, anthropic, faux, sse, partialjson
 │   ├── agent/         # runtime loop, events, queues, hooks, tool filters
@@ -133,7 +199,8 @@ mixi-agent/
 │   ├── perm/          # permission engine (modes, rules, decision pipeline)
 │   ├── compact/       # context compaction (estimator, cutter, summarizer)
 │   ├── workset/       # working-set assembly (file tracking, budget pipeline)
-│   └── modes/         # print mode + EventSink (text / JSONL)
+│   ├── tui/           # Bubble Tea interactive terminal UI (bridge, transcript, approval modal)
+│   └── modes/         # print mode + TUI mode + EventSink (text / JSONL)
 ├── docs/              # codebase summary, changelog, journals
 ├── scripts/           # development utilities
 └── plans/             # implementation plans (local)

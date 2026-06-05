@@ -298,3 +298,67 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - Headless asker: deny with actionable reason (actionable for users to add rules)
 
 **Summary:** Permission engine complete. Print mode now enforces permission policies by default (prompt mode), with three other modes for read-only (plan), permissive-file (auto-edit), and unrestricted (yolo). Baseline safety screens catch dangerous patterns. Unblocks TUI phase (10+) for interactive permission approval UI and RPC mode for remote agent control.
+
+## Phase 10: Interactive TUI (2026-06-05)
+
+### TUI Package (`internal/tui`)
+- Implement Bubble Tea application (app.go, model.go): root model handles key input, manages transcript, modal, editor, status bar components
+- Build event bridge (bridge.go): single goroutine pumps agent.Subscribe() events into tea model via Send() channel; decouples agent goroutines from tea loop
+- Implement transcript viewport (transcript.go): sticky-bottom scrolling, component list keyed by message/tool IDs, viewport pagination
+- Add message view (msgview.go): renders streaming text → glamour markdown on message end; thinking blocks dim/italic collapsed to first line (+N counter); Shift+Tab toggles expansion
+- Add tool view (toolview.go): spinner → ✓/✗ on completion; 8-line preview (Ctrl+O toggles expand); edit/write cards show colorized unified diff (Myers diff); bash/mcp cards show command+args summary
+- Implement approval modal (approval.go): overlay with scrollable preview, decision buttons (a/d/A/Esc), focuses input, blocks tool execution until decision delivered to perm.PendingAsk.Reply
+- Build input editor (editor.go): textarea with history ring (50 entries), Up/Down cycle history, Ctrl+G suspends tea + execs $EDITOR on temp file + resumes, slash-command autocomplete (prefix match)
+- Add status bar (statusbar.go): displays current model, thinking level, context-usage %, estimated $cost, permission mode, background job count; subscribes live usage snapshots
+- Implement keymap (keymap.go): bubbles key.Binding table (single source for help text + handlers); 27 bindings covering Enter/Alt+Enter/Esc/Ctrl+C×2/Shift+Tab/Ctrl+P/Ctrl+O/Ctrl+T/Ctrl+G/Ctrl+L/scroll/history
+- Add slash commands (commands.go): `/model /compact /pin /tree /permissions /mode /cost /name /quit` (backends exist; `/mcp /new /resume /fork` stub hint notices; `/mcp` awaits phase 11, session-switching awaits user-accepted deferral)
+- Implement TUI asker integration (perm/ask.go + tui/): NotifyAsker replaces HeadlessAsker for interactive mode; channels approval requests via perm.PendingAsk; TUI adapter answers modal decisions immediately
+- Build E2E test suite (teatest): full interactive session (prompt → stream → tool → approval → result → idle), Esc interrupt mid-stream, double Ctrl+C quit, approval grant persistence across calls
+- 15 source files + 3 test files; 74.7% coverage
+
+### Agent Contract Additions
+- `Agent.SetModel(ai.Model)` — switch model mid-session (TUI Ctrl+P); snapshot under run() mutex, affects next run only
+- `Agent.Model() ai.Model` — query current model
+- `Agent.SetThinking(level string)` — set extended thinking level; treated as off if unset (default)
+- `Agent.Thinking() string` — query current thinking level
+- `Agent.Running() bool` — poll if agent is actively streaming/executing
+
+### Permission Engine Enhancements
+- Add `PendingAsk` struct: buffered-1 Reply channel for modal decisions; exactly-once delivery semantics
+- Add `NotifyAsker` interface: channel-driven asker (reused by RPC phase 14); bridges perm.Engine to external UI
+- TUI builds NotifyAsker and injects via perm.Asker hook before agent dispatch
+
+### CLI Integration (`cmd/mixi`)
+- Default to TUI mode when stdin is a terminal (isatty); flag `--mode tui` forces TUI explicit
+- Add `run_tui.go`: instantiates app, wires agent.Subscribe, hooks perm.NotifyAsker, runs tea.Program loop
+- Redirect slog output to <sessiondir>/mixi.log (never stdout/stderr in interactive mode)
+- TUI mode respects same permission settings, session flags, model selection as print mode
+- All other behaviors (fork, resume, continue) work identically in TUI
+
+### Dependency Additions
+- `github.com/charmbracelet/bubbletea` v1.3.10 (TUI framework)
+- `github.com/charmbracelet/bubbles` v1.0.0 (viewport, textarea, spinner)
+- `github.com/charmbracelet/lipgloss` (styling, layout, table)
+- `github.com/charmbracelet/glamour` v1.0.0 (markdown renderer)
+- `golang.org/x/exp/teatest` (E2E test helpers, test-only)
+
+### Test Results & Quality
+- `internal/tui`: 74.7% coverage, teatest E2E ×3 scenarios (interactive session, interrupt, quit)
+- Full repo: `go test -race ./...` green; 529 total tests, zero flakes
+- E2E: prompt → stream → tool execution → approval modal → result → graceful exit; second identical call auto-granted
+
+### Key Behaviors
+- **Default mode:** TUI on tty, print on pipe/redirect (auto-detect)
+- **Event bridge:** agent runs in background goroutine, pumps events via tea.Send() (non-blocking)
+- **Run context ownership:** TUI owns each run's context (created before Prompt goroutine scheduled); Esc closes context before agent.Abort called
+- **Modal preview:** sizes to content (prevents title truncation on small terminals)
+- **First Shift+Tab:** treats unset thinking level ("") as off, cycles to low
+- **Session grants:** 'A' (always allow) stores grant in memory; second identical call bypasses modal
+- **Deferred features:** `/new /resume /fork` ship as CLI-flag hint notices; in-TUI session switching deferred (requires runtime rebuild, user accepted 260605)
+
+### Known Limitations
+- `/mcp` stubs until phase 11 (MCP client integration)
+- In-TUI session switching deferred (would require process-level reinitialization)
+- Themes and image preview deferred to future phases (parity with spec only)
+
+**Summary:** Interactive TUI complete. `mixi` with no -p and a tty launches Bubble Tea mode with live transcript, permission approval modal, input editor (history + $EDITOR), status bar, and 27 keybindings. Event bridge decouples agent execution from UI rendering. Session persistence works identically in TUI and print modes. Unblocks MCP client (phase 11) and RPC mode (phase 14) which reuses NotifyAsker.

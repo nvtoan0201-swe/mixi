@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 9 complete (Permission Engine)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 10 complete (Interactive TUI)
 
 ## Package Overview
 
@@ -21,19 +21,24 @@
 | `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
 | `internal/compact` | Context compaction: usage-anchored token estimation, turn serialization, cut-point selection, LLM summarization, Compactor state machine | `Compactor`, `Controller`, `LLMSummarizer`, `Estimator` |
 | `internal/workset` | Working-set assembly: file-freshness tracking, context budgeting (trim→compact→error), custom-entry persistence | `WorkingSet`, `FileStamp`, `ContextBuilder` |
-| `internal/perm` | Permission engine: 4 modes (plan/prompt/auto-edit/yolo), rule globs (bash command, path doublestar, MCP name), baseline screens (denied bash patterns, secret-glob forced-ask, write outside cwd), session grants, headless asker | `Engine`, `Policy`, `Mode`, `Rule`, `Asker`, `HeadlessAsker` |
+| `internal/perm` | Permission engine: 4 modes (plan/prompt/auto-edit/yolo), rule globs (bash command, path doublestar, MCP name), baseline screens (denied bash patterns, secret-glob forced-ask, write outside cwd), session grants, headless asker, TUI asker | `Engine`, `Policy`, `Mode`, `Rule`, `Asker`, `HeadlessAsker`, `NotifyAsker`, `PendingAsk` |
+| `internal/tui` | Bubble Tea interactive mode: event bridge, streaming transcript viewport, tool cards (with colorized diffs), approval modal, status bar, input editor (history ring + slash autocomplete + $EDITOR), keymap, slash commands | `App`, `model`, `bridge`, `transcript`, `msgview`, `toolview`, `approval`, `editor`, `statusbar`, `keymap` |
 
 ## Architecture Layers
 
-### Layer 0: CLI & Mode Dispatch (`cmd/mixi`, `internal/config`, `internal/modes`)
+### Layer 0: CLI & Mode Dispatch (`cmd/mixi`, `internal/config`, `internal/modes`, `internal/tui`)
 - **CLI entry point** (`main.go`): parses args, detects piped stdin, resolves config, opens session, dispatches to mode
 - **Flag parsing** (`internal/config/flags.go`): stdlib flag.FlagSet with repeatable flags (--message, --allow, --deny), WasSet tracking for precedence
 - **Settings merging** (`internal/config/config.go`): JSON load from ~/.mixi/settings.json, .mixi/settings.json (cwd), and --config file; deny lists append-only across layers; ${ENV} brace-only expansion
 - **Precedence resolution** (`internal/config/runtime.go`): Resolve(flags, settings, cwd, stdin) → RuntimeConfig with flags > settings > defaults; special-case faux/scripted model via config.ResolveModel
 - **Print mode** (`internal/modes/print.go`): subscribe to agent events, persist per-event to session storage, fan-out to EventSink (text or JSONL), queue follow-ups, emit exit codes (0/1/2/130)
 - **EventSink abstraction** (`internal/modes/sink.go`, `sink_json.go`): TextSink (final assistant text to stdout, errors to stderr), JSONSink (flattened JSONL per event)
-- **Signal handling** (`cmd/mixi/main.go`): SIGINT → graceful abort (exit 130), 2nd SIGINT/SIGTERM → cleanup + exit
+- **TUI mode** (`internal/tui/`, `cmd/mixi/run_tui.go`): Bubble Tea application running on tty (auto-default when stdin is terminal); event bridge pumps agent.Subscribe() into tea model; approval modal answers permission engine via perm.PendingAsk.Reply channel
+- **TUI components** (10 sub-packages): root model + key handling, transcript viewport with sticky-bottom, message/tool views (streaming states, glamour markdown, diff rendering), approval modal overlay, input editor (history ring ×50, slash autocomplete, Ctrl+G external editor), status bar (live model/think/ctx%/$cost/mode/jobs), keymap table (27 bindings), slash command registry
+- **TUI asker** (`internal/perm/ask.go` + `internal/tui/` adapter): replaces HeadlessAsker; PendingAsk channels approval requests to modal; NotifyAsker is the channel-driven asker interface (reused by RPC phase 14)
+- **Signal handling** (`cmd/mixi/main.go`): SIGINT → graceful abort (exit 130 in print, Esc interrupt in TUI), 2nd SIGINT/SIGTERM → cleanup + exit
 - **Session wiring** (`cmd/mixi/setup.go`): openSession per flags (fresh / -c / --resume / --fork / --no-save); historyFromSession seeds agent.History from active path
+- **TUI logging** (`cmd/mixi/run_tui.go`): slog redirected to <sessiondir>/mixi.log; never stdout/stderr during interactive mode
 
 ### Layer 1: Core Types (`internal/ai`)
 - **Sealed unions** (marker interfaces + JSON discriminators): `Content`, `Message`, `StreamEvent`
@@ -310,6 +315,13 @@ Log          *slog.Logger          // Default: slog.Default()
 History      []AgentMessage        // Default: nil (session resume seeding, Phase 7)
 ```
 
+**Agent Contract Additions** (Phase 10):
+- `Agent.SetModel(ai.Model)` — change model mid-session (TUI Ctrl+P); affects next run
+- `Agent.Model() ai.Model` — query current model
+- `Agent.SetThinking(level string)` — set extended thinking level (off/low/medium/high); affects next run
+- `Agent.Thinking() string` — query current thinking level
+- `Agent.Running() bool` — check if agent is actively streaming/executing tools
+
 **Permission Settings** (internal/config via ~/.mixi/settings.json):
 ```
 permissions.mode                   // plan | prompt | auto-edit | yolo; default: prompt
@@ -317,6 +329,10 @@ permissions.allow[]                // Allow rules (bash(prefix*), read/write/edi
 permissions.deny[]                 // Deny rules (same syntax; deny appends across layers)
 permissions.denyPatterns[]          // Bash command regex blacklist; default: none
 ```
+
+**Asker Interface** (internal/perm):
+- `HeadlessAsker` — print mode, denies with actionable reason; legacy phase 9 implementation
+- `NotifyAsker` (phase 10+) — channel-driven asker for TUI + future RPC modes; implements `Asker` interface with PendingAsk struct (buffered Reply channel, exactly-once delivery)
 
 **Compaction Settings** (internal/config via ~/.mixi/settings.json):
 ```
@@ -354,6 +370,11 @@ Observer     FileObserver          // Optional: tracks read/write/edit operation
 - `golang.org/x/image` (draw, webp) — image downscale, WebP decode for read_image.go (Phase 5)
 - `github.com/google/uuid` — uuidv7 generation for session IDs (Phase 6)
 - `golang.org/x/sys` — Windows LockFileEx (Phase 6, untested best-effort)
+- `github.com/charmbracelet/bubbletea` — TUI framework (Phase 10)
+- `github.com/charmbracelet/bubbles` — TUI widgets: viewport, textarea, spinner (Phase 10)
+- `github.com/charmbracelet/lipgloss` — TUI styling, layout (Phase 10)
+- `github.com/charmbracelet/glamour` — markdown renderer for transcript (Phase 10)
+- `golang.org/x/exp/teatest` — TUI E2E testing helpers (test-only, Phase 10)
 
 **Existing:**
 - Standard library: context, encoding/json, io, os, syscall, time, crypto/sha256, etc.
