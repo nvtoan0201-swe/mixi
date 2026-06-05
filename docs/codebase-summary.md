@@ -1,6 +1,6 @@
 # mixi-agent Codebase Summary
 
-**Module:** `github.com/user/mixi-agent` | **Status:** Phase 10 complete (Interactive TUI)
+**Module:** `github.com/user/mixi-agent` | **Status:** Phase 11 complete (MCP Client)
 
 ## Package Overview
 
@@ -17,12 +17,14 @@
 | `internal/config` | Settings files + CLI flags with precedence resolution; runtime config assembly | `Settings`, `Flags`, `RuntimeConfig`, `Resolve` |
 | `internal/modes` | Headless run modes (print now; RPC/replay stubbed); EventSink abstraction | `EventSink`, `TextSink`, `JSONSink`, `RunPrint` |
 | `internal/schema` | JSON-Schema validation, coercion, LLM-readable errors | `Compile`, `Coerce`, `ErrFormatter` |
-| `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup) | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
+| `internal/tools` | Nine built-in tools (read, write, edit, bash, bash_output, kill_bash, grep, find, ls); shared infra (truncate, accumulator, job table, process group, binary lookup); Registry now concurrent-safe (RWMutex) for late MCP tool registration | `Tool`, `Registry`, `ToolResult`, `accumulator`, `JobTable` |
 | `internal/session` | Append-only JSONL tree storage for conversations; file locking, crash recovery, branching | `Storage`, `Manager`, `Loader`, `Entry`, `Header` |
 | `internal/compact` | Context compaction: usage-anchored token estimation, turn serialization, cut-point selection, LLM summarization, Compactor state machine | `Compactor`, `Controller`, `LLMSummarizer`, `Estimator` |
 | `internal/workset` | Working-set assembly: file-freshness tracking, context budgeting (trim→compact→error), custom-entry persistence | `WorkingSet`, `FileStamp`, `ContextBuilder` |
 | `internal/perm` | Permission engine: 4 modes (plan/prompt/auto-edit/yolo), rule globs (bash command, path doublestar, MCP name), baseline screens (denied bash patterns, secret-glob forced-ask, write outside cwd), session grants, headless asker, TUI asker | `Engine`, `Policy`, `Mode`, `Rule`, `Asker`, `HeadlessAsker`, `NotifyAsker`, `PendingAsk` |
 | `internal/tui` | Bubble Tea interactive mode: event bridge, streaming transcript viewport, tool cards (with colorized diffs), approval modal, status bar, input editor (history ring + slash autocomplete + $EDITOR), keymap, slash commands | `App`, `model`, `bridge`, `transcript`, `msgview`, `toolview`, `approval`, `editor`, `statusbar`, `keymap` |
+| `internal/wire` | JSONL framing (1MiB line cap, atomic writes, optional write deadline) — shared transport seam for subprocess extensions (phase 12) and RPC (phase 14) | `FrameWriter`, `FrameReader`, `MaxLineLen` |
+| `internal/mcp` | MCP client for tool integration: protocol negotiation (2025-06-18 with 2025-03-26 fallback), stdio transport (Setpgid, stderr→DEBUG, SIGTERM→SIGKILL), id-tracked request routing, per-call timeouts (30s default), malformed-line rate-cap (10/min), tool adapter (names `mcp__<server>__<tool>`, schema passthrough w/ permissive fallback) | `Client`, `Manager`, `Transport`, `ServerConfig` |
 
 ## Architecture Layers
 
@@ -34,11 +36,12 @@
 - **Print mode** (`internal/modes/print.go`): subscribe to agent events, persist per-event to session storage, fan-out to EventSink (text or JSONL), queue follow-ups, emit exit codes (0/1/2/130)
 - **EventSink abstraction** (`internal/modes/sink.go`, `sink_json.go`): TextSink (final assistant text to stdout, errors to stderr), JSONSink (flattened JSONL per event)
 - **TUI mode** (`internal/tui/`, `cmd/mixi/run_tui.go`): Bubble Tea application running on tty (auto-default when stdin is terminal); event bridge pumps agent.Subscribe() into tea model; approval modal answers permission engine via perm.PendingAsk.Reply channel
-- **TUI components** (10 sub-packages): root model + key handling, transcript viewport with sticky-bottom, message/tool views (streaming states, glamour markdown, diff rendering), approval modal overlay, input editor (history ring ×50, slash autocomplete, Ctrl+G external editor), status bar (live model/think/ctx%/$cost/mode/jobs), keymap table (27 bindings), slash command registry
+- **TUI components** (10 sub-packages): root model + key handling, transcript viewport with sticky-bottom, message/tool views (streaming states, glamour markdown, diff rendering), approval modal overlay, input editor (history ring ×50, slash autocomplete, Ctrl+G external editor), status bar (live model/think/ctx%/$cost/mode/jobs), keymap table (27 bindings), slash command registry (includes `/mcp` status + `/mcp reconnect <name>`)
 - **TUI asker** (`internal/perm/ask.go` + `internal/tui/` adapter): replaces HeadlessAsker; PendingAsk channels approval requests to modal; NotifyAsker is the channel-driven asker interface (reused by RPC phase 14)
 - **Signal handling** (`cmd/mixi/main.go`): SIGINT → graceful abort (exit 130 in print, Esc interrupt in TUI), 2nd SIGINT/SIGTERM → cleanup + exit
 - **Session wiring** (`cmd/mixi/setup.go`): openSession per flags (fresh / -c / --resume / --fork / --no-save); historyFromSession seeds agent.History from active path
 - **TUI logging** (`cmd/mixi/run_tui.go`): slog redirected to <sessiondir>/mixi.log; never stdout/stderr during interactive mode
+- **MCP setup** (`cmd/mixi`): startMCP initializes MCP manager from config, bounded startup wait, wiring MCP tools after registry built, honors --no-mcp flag, exposes /mcp status in TUI
 
 ### Layer 1: Core Types (`internal/ai`)
 - **Sealed unions** (marker interfaces + JSON discriminators): `Content`, `Message`, `StreamEvent`
@@ -58,6 +61,15 @@
 ### Layer 2b: Provider Implementation (`internal/ai/anthropic`, `internal/ai/faux`)
 - **Anthropic:** Converts Anthropic wire format → normalized `StreamEvent` order contract; handles extended thinking (redacted_thinking), block tracking, content indexing; SSE decoder + partial JSON repair for streaming text/tool calls; caches model metadata; retry hooks apply to API calls
 - **Faux (E2E test provider):** Scripted, always-compiled model `faux/scripted` replays turns from JSON file (MIXI_FAUX_SCRIPT env); per-process sync.Once load; delegates playback to agenttest.Provider for identical wire behavior to unit tests; used in cmd/mixi E2E suite for SIGINT testing and subprocess re-exec patterns
+
+### Layer 2c: MCP Client & Wire Transport (`internal/mcp`, `internal/wire`)
+- **Wire package** (`internal/wire/jsonl.go`): JSONL framing layer for reliable subprocess communication; atomic writes, 1MiB per-line cap, optional write deadline for stuck servers
+- **MCP protocol** (`internal/mcp/protocol.go`): structs for MCP 2025-06-18 and 2025-03-26 fallback; initialization, tools request, call/result/error message types
+- **MCP Transport** (`internal/mcp/transport.go`): interface abstraction for protocol I/O; stdio impl (`internal/mcp/stdio.go`) spawns subprocess with Setpgid (Unix), redirects stderr to DEBUG logs, escalates shutdown SIGTERM→2s→SIGKILL
+- **MCP Client** (`internal/mcp/client.go`, `client_calls.go`): id-tracked routing, per-call default 30s timeout, malformed-line cap (10/min), handles RPC errors and crashes mid-call
+- **MCP Manager & Supervisor** (`internal/mcp/manager.go`, `supervisor.go`): lifecycle state machine (CONFIGURED→INITIALIZING→READY⇄RESTARTING→FAILED/CLOSED), exponential backoff (1s/2s/4s), 3-strike disable, /mcp reconnect command, tool registration after startup
+- **Server config** (`internal/mcp/server_config.go`): decode from settings.json mcpServers block, ${VAR} env expansion, timeoutMs per-server override
+- **Tool adapter** (`internal/mcp/tooladapter.go`): wraps MCP tools as internal/tools.Tool; names as `mcp__<server>__<tool>`, description prefix `[mcp:<server>] `, schema passthrough with permissive fallback (uncompilable schemas don't crash)
 
 ### Layer 3: Agent Runtime (`internal/agent`)
 - **ToolCallFilter interface:** sits ahead of BeforeToolCall hook; permission engine implements this for filter-first pipeline; filters fail closed (error on filter crash → tool denied)
@@ -277,6 +289,22 @@
 - `context_builder.go` (ContextBuilder: summary→pinned→kept→staleness, trim→compact→error budget pipeline, projection-only)
 - 7+ tests: FileStamp staleness, budget pipeline, context assembly
 
+### Wire Transport (200+ LOC)
+- `internal/wire/jsonl.go` (JSONL framing, line cap, atomic writes, write deadline)
+- Tests: round-trip encode/decode, oversize line rejection, malformed input handling
+
+### MCP Client (2,000+ LOC)
+- `internal/mcp/protocol.go` (MCP message types, version negotiation)
+- `internal/mcp/transport.go` (Transport interface, protocol I/O abstraction)
+- `internal/mcp/stdio.go` (subprocess spawn, Setpgid, stderr→DEBUG, SIGTERM escalation)
+- `internal/mcp/client.go` (request routing, response dispatch, error handling)
+- `internal/mcp/client_calls.go` (per-call execution, timeout, malformed cap)
+- `internal/mcp/manager.go` (MCP lifecycle, tool registration, server state)
+- `internal/mcp/supervisor.go` (lifecycle state machine, backoff, reconnect logic)
+- `internal/mcp/server_config.go` (settings.json decode, env expansion)
+- `internal/mcp/tooladapter.go` (adapter to internal/tools.Tool interface)
+- Tests: chaos suite vs fake compiled server, everything-server conformance (13 tools live)
+
 ### AI Layer (500+ LOC)
 - `types.go` (Content/Message/StreamEvent sealed unions, Model, Context)
 - `json.go` (JSON marshal/unmarshal with discriminators)
@@ -322,6 +350,11 @@ History      []AgentMessage        // Default: nil (session resume seeding, Phas
 - `Agent.Thinking() string` — query current thinking level
 - `Agent.Running() bool` — check if agent is actively streaming/executing tools
 
+**Phase 11 Enhancements:**
+- `tools.Registry` now guarded by RWMutex for concurrent tool registration (MCP tools register after startup)
+- `Config.Tools` injection point for MCP tools; manager discovers tools post-init and calls Registry.Register
+- `runTUI` now accepts optional MCPFleet manager for /mcp command support
+
 **Permission Settings** (internal/config via ~/.mixi/settings.json):
 ```
 permissions.mode                   // plan | prompt | auto-edit | yolo; default: prompt
@@ -340,6 +373,21 @@ compaction.disabled              // Kill-switch: bool (default: false)
 compaction.reserveTokens         // Minimum context budget kept free; default: 16384
 compaction.keepRecentTokens      // Soft limit on working set; default: 20000
 ```
+
+**MCP Settings** (internal/config via ~/.mixi/settings.json):
+```
+mcpServers: {
+  "server-name": {
+    "command": "binary-name",           // required: executable name
+    "args": ["arg1", "arg2"],           // optional: args to pass
+    "env": {"VAR": "${VAR_NAME}"},      // optional: ${VAR} expansion for env vars
+    "timeoutMs": 30000                  // optional: per-call timeout (ms); default 30000
+  }
+}
+```
+
+**CLI flag:**
+- `--no-mcp` — skip MCP manager initialization, disable all MCP tool registration
 
 **Tool Observer** (tools.Options):
 ```go
@@ -378,6 +426,7 @@ Observer     FileObserver          // Optional: tracks read/write/edit operation
 
 **Existing:**
 - Standard library: context, encoding/json, io, os, syscall, time, crypto/sha256, etc.
+- (Phase 11 note: no new external deps added; wire and mcp use only stdlib + existing internal packages)
 
 ## Stability Notes
 

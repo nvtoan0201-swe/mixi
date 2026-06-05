@@ -36,26 +36,27 @@
 - ✓ Context compaction & working set
 - ✓ Permission engine for tool calls
 - ✓ Interactive TUI (Bubble Tea) with permission approval UI
-- MCP client (stdio), subprocess extensions, RPC mode with permission agent
+- ✓ MCP client (stdio) with per-call timeouts and lifecycle management
+- Subprocess extensions (phase 12), RPC mode with permission agent (phase 14)
 - OpenAI provider, observability & replay, fault-injection hardening
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────┐
-│              CLI / TUI / RPC (planned)        │
-├───────────────────────────────────────────────┤
-│ internal/agent     two-level runtime loop     │
-│                    queues · retries · hooks   │
-├──────────────┬──────────────┬─────────────────┤
-│ internal/    │ internal/    │ internal/       │
-│ tools        │ session      │ schema          │
-│ 9 built-ins  │ JSONL tree   │ validation +    │
-│ + job table  │ storage      │ coercion        │
-├──────────────┴──────────────┴─────────────────┤
-│ internal/ai    normalized types · registry    │
-│ internal/ai/anthropic · sse · partialjson     │
-└───────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│         CLI / TUI / RPC (RPC planned phase 14)         │
+├────────────────────────────────────────────────────────┤
+│ internal/agent     two-level runtime loop              │
+│                    queues · retries · hooks            │
+├────────────┬────────────────┬──────────┬───────────────┤
+│ internal/  │ internal/      │ internal/│ internal/mcp  │
+│ tools      │ session        │ schema   │ + wire        │
+│ 9 built-ins│ JSONL tree     │validation│ subprocess    │
+│ + MCP tools│ storage        │ coercion │ I/O & protocol│
+├────────────┴────────────────┴──────────┴───────────────┤
+│ internal/ai    normalized types · registry             │
+│ internal/ai/anthropic · sse · partialjson              │
+└────────────────────────────────────────────────────────┘
 ```
 
 | Package | Purpose |
@@ -64,8 +65,10 @@
 | `internal/ai/anthropic` | Anthropic API provider (SSE streaming, thinking, retries) |
 | `internal/agent` | Agent runtime: turns, tool dispatch, queues, events |
 | `internal/schema` | JSON-Schema validation with coercion and readable errors |
-| `internal/tools` | Built-in tools and shared infrastructure |
+| `internal/tools` | Built-in tools (9), MCP tools, shared infrastructure |
 | `internal/session` | Append-only JSONL conversation storage with branching |
+| `internal/mcp` | MCP client for subprocess tool integration (protocol, transport, lifecycle) |
+| `internal/wire` | JSONL framing for subprocess I/O (1MiB line cap, atomic writes) |
 
 ## Getting Started
 
@@ -107,7 +110,7 @@ echo "what does this repo do?" | ./mixi --output json
 # → Or: --allow 'edit(main.go)' in settings.json for persistent rules
 ```
 
-Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`, `--permission-mode plan|prompt|auto-edit|yolo`, `--allow` (repeatable), `--deny` (repeatable). Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
+Useful flags: `--model provider/id`, `-c` (continue last session), `--resume <id>`, `--no-save`, `--session-dir <dir>`, `--max-turns N`, `--permission-mode plan|prompt|auto-edit|yolo`, `--allow` (repeatable), `--deny` (repeatable), `--no-mcp` (disable MCP). Bad flags exit `2`; run errors exit `1`; Ctrl-C aborts with `130`.
 
 > **Permission Engine (Phase 9):** Print mode now enforces four permission modes; default (`prompt`) asks for approval on write/execute/mcp calls. Use `--permission-mode auto-edit` for read+write free, or configure persistent rules in `~/.mixi/settings.json` under the `permissions` block.
 
@@ -158,6 +161,8 @@ Prefix input with `/` to trigger built-in commands:
 - `/mode` — show current permission mode
 - `/name <label>` — label the session
 - `/cost` — show token usage and cost breakdown
+- `/mcp` — show MCP server status and tool counts
+- `/mcp reconnect <name>` — manually reconnect a failed MCP server
 - `/quit` — gracefully exit
 
 Commands like `/new`, `/resume`, `/fork` are available via CLI flags (see above).
@@ -176,6 +181,37 @@ Modal shows a colorized diff for `edit` calls, and a summary of command+args for
 
 - Session logs go to `<sessiondir>/mixi.log`, never to stdout/stderr
 - Logs are only emitted in verbose debug builds (not by default)
+
+### MCP Server Integration (Phase 11)
+
+`mixi` supports integrating external tools via the [Model Context Protocol](https://modelcontextprotocol.io/).
+
+**Configuration example** (`~/.mixi/settings.json`):
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "github-mcp-server",
+      "args": ["stdio"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "timeoutMs": 30000
+    }
+  }
+}
+```
+
+**How it works:**
+- Servers start on demand (first tool call or explicit `/mcp reconnect`)
+- Tools appear with names like `mcp__github__search_repos` (pattern: `mcp__<server>__<tool>`)
+- Per-call timeout: 30s default, overridable per-server in config
+- Crash detection: if server crashes mid-call, error surfaced to agent ("MCP server X crashed…")
+- Graceful shutdown: SIGTERM → 2s wait → SIGKILL on exit
+
+**CLI:** use `--no-mcp` to skip MCP initialization (all servers disabled for the session).
+
+**TUI:** `/mcp` shows server status (name, version, ready state, tool count); `/mcp reconnect <name>` manually reconnects a failed server.
 
 ## Design Highlights
 

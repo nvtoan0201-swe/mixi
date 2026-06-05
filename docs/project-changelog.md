@@ -362,3 +362,58 @@ All phases (1–5) delivered on schedule. Built-in tool suite complete for agent
 - Themes and image preview deferred to future phases (parity with spec only)
 
 **Summary:** Interactive TUI complete. `mixi` with no -p and a tty launches Bubble Tea mode with live transcript, permission approval modal, input editor (history + $EDITOR), status bar, and 27 keybindings. Event bridge decouples agent execution from UI rendering. Session persistence works identically in TUI and print modes. Unblocks MCP client (phase 11) and RPC mode (phase 14) which reuses NotifyAsker.
+
+## Phase 11: MCP Client (2026-06-05)
+
+### Wire Transport Package (`internal/wire`)
+- Implement JSONL framing layer for subprocess pipe communication
+- Add frame codec: write-side atomic writes with 1MiB per-line cap
+- Implement read-side FrameReader with malformed-line detection
+- Support optional write deadline for stuck server detection
+- 2 source files + tests; shared transport seam for phases 12 (extension host) and 14 (RPC)
+
+### MCP Client Package (`internal/mcp`)
+- Implement MCP protocol structs (protocol.go): initialization, tools listing, call/result/error messages
+- Support version negotiation: MCP 2025-06-18 with 2025-03-26 fallback
+- Build Transport interface abstraction; stdio implementation spawns subprocess with Setpgid (Unix), stderr→DEBUG logs, graceful shutdown SIGTERM→2s→SIGKILL escalation
+- Implement Client: id-tracked routing of requests/responses, per-call default 30s timeout, malformed-line cap (10/min) with rate reset
+- Build lifecycle state machine (Manager/Supervisor): CONFIGURED→INITIALIZING→READY⇄RESTARTING→FAILED/CLOSED
+- Implement exponential backoff (1s/2s/4s), 3-strike disable, /mcp reconnect command support
+- Add ServerConfig: mcpServers block decode, ${VAR} env expansion, per-server timeoutMs override
+- Implement ToolAdapter: wraps MCP tools as internal/tools.Tool; names as `mcp__<server>__<tool>`, description prefix `[mcp:<server>] `, schema passthrough with permissive fallback (uncompilable schemas don't crash agent)
+- 11 source files + 5 test files + testdata fake server; chaos suite vs compiled server, everything-server conformance (13 tools verified live)
+
+### Registry Concurrency (internal/tools)
+- Upgrade `tools.Registry` to RWMutex-guarded for safe concurrent registration
+- Late MCP tool registration after startup: tools appear next turn, concurrent reads/writes safe
+
+### CLI & TUI Integration (`cmd/mixi`, `internal/tui`)
+- Add startMCP: config decode, bounded initial wait, wiring MCP tools post-registry
+- Honor --no-mcp flag to skip MCP initialization
+- Add `/mcp` TUI command: show server states (name, protocol version, ready state, tool count)
+- Add `/mcp reconnect <name>`: manually trigger reconnect attempt
+- Implement MCP tool crash handling: mid-call crashes surface as LLM-visible error result "MCP server X crashed during call…"
+- Wire MCPFleet manager into TUI for /mcp command dispatch
+- Tool adapter integrates MCP tools into permission engine (tool name matches `mcp__*` pattern)
+
+### Configuration
+- Extend settings.json: `mcpServers` block with server configs (command, args, env, timeoutMs)
+- Example: `{"mcpServers": {"github": {"command": "github-mcp-server", "args": ["stdio"], "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}, "timeoutMs": 30000}}}`
+
+### Test Results & Quality
+- Wire: 71.8% coverage; MCP: 86.6% coverage
+- Chaos test suite ×3 (simulator, panic, hang scenarios) + e2e ×2 + 3-strike test ×10: no flakes
+- Full repo: `go test -race` green
+- Code review: 4 findings fixed (ErrConnClosed sentinel, notify-after-FAILED ordering, write deadline for stuck stdin, Manager.mu cleanup)
+- Live conformance: everything-server (npx) ran 13 tools, echo round-trip verified
+
+### Key Deliverables
+- MCP client with id-tracked request routing and per-call timeouts
+- Subprocess lifecycle management (Setpgid spawn, graceful shutdown escalation)
+- Tool registration after startup; concurrent-safe Registry for late binding
+- Permissive schema fallback (uncompilable schemas don't crash)
+- Rate-capped malformed-line detection (10/min)
+- /mcp status command in TUI + reconnect support
+- CLI --no-mcp flag to disable MCP initialization
+
+**Summary:** MCP client complete. `mixi` now integrates stdio-based MCP servers with per-call timeouts, crash detection, graceful shutdown, and tool lifecycle management. Tools register dynamically post-startup and appear next turn. TUI /mcp command shows server status; CLI --no-mcp flag disables MCP. Unblocks extension host (phase 12) and RPC mode (phase 14) which reuse wire transport and MCP supervisor.

@@ -38,7 +38,7 @@ Note: old `internal/ai` skeleton (commit `add2cf0`) was intentionally reset; its
 | 8 | [Compaction & Working Set](./phase-08-compaction-working-set.md) | ✅ Complete (260604, controller bridge in `internal/compact/controller.go`; BRANCH prompt ported, consumer lands with TUI) |
 | 9 | [Permission Engine](./phase-09-permission-engine.md) | ✅ Complete (260605, secret screen covers read+grep; TOCTOU accepted v1) |
 | 10 | [Interactive TUI](./phase-10-interactive-tui.md) | ✅ Complete (260605, /new /resume /fork as CLI-flag hints — in-TUI switching deferred) |
-| 11 | [MCP Client](./phase-11-mcp-client.md) | Pending |
+| 11 | [MCP Client](./phase-11-mcp-client.md) | ✅ Complete (260605, everything-server smoke ran live: 13 tools, echo OK) |
 | 12 | [Extension Host](./phase-12-extension-host.md) | Pending |
 | 13 | [Observability & Replay](./phase-13-observability-replay.md) | Pending |
 | 14 | [RPC Mode](./phase-14-rpc-mode.md) | Pending |
