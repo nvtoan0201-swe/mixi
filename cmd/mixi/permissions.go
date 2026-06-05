@@ -61,6 +61,19 @@ func (n *agentNotifier) publish(p perm.PendingAsk) {
 	a.Notify(agent.EvPermissionAsk{Req: p})
 }
 
+// notice forwards a user-facing text notice (MCP server disabled, …) onto
+// the agent bus; notices raised before the agent exists are dropped — the
+// subsystems that send them also log the underlying condition.
+func (n *agentNotifier) notice(text string) {
+	n.mu.Lock()
+	a := n.a
+	n.mu.Unlock()
+	if a == nil {
+		return
+	}
+	a.Notify(agent.EvNotice{Text: text})
+}
+
 // permissionFilter adapts the permission engine onto the agent's tool-call
 // filter pipeline.
 type permissionFilter struct {

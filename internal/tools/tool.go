@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/user/mixi-agent/internal/ai"
 )
@@ -62,9 +63,11 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage, updates chan<- ToolUpdate) (ToolResult, error)
 }
 
-// Registry is a name-keyed tool set. Not safe for concurrent mutation;
-// build it once at startup, read freely afterwards.
+// Registry is a name-keyed tool set. Safe for concurrent use: built-ins
+// register at startup, but MCP servers add tools whenever they come up
+// (handshake, restart, list_changed), racing the agent loop's reads.
 type Registry struct {
+	mu     sync.RWMutex
 	byName map[string]Tool
 	order  []Tool
 }
@@ -76,6 +79,8 @@ func NewRegistry() *Registry {
 // Register adds a tool, rejecting duplicate names.
 func (r *Registry) Register(t Tool) error {
 	name := t.Name()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, dup := r.byName[name]; dup {
 		return fmt.Errorf("tools: duplicate tool name %q", name)
 	}
@@ -86,17 +91,23 @@ func (r *Registry) Register(t Tool) error {
 
 // Get returns the tool registered under name.
 func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.byName[name]
 	return t, ok
 }
 
 // All returns tools in registration order.
 func (r *Registry) All() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return append([]Tool(nil), r.order...)
 }
 
 // Defs projects the registry into provider-facing tool definitions.
 func (r *Registry) Defs() []ai.ToolDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	defs := make([]ai.ToolDef, 0, len(r.order))
 	for _, t := range r.order {
 		defs = append(defs, ai.ToolDef{Name: t.Name(), Description: t.Description(), Schema: t.Schema()})

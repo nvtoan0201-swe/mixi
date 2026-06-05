@@ -125,6 +125,19 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	}
 	defer jobs.KillAll()
 
+	// The notifier forwards permission asks and subsystem notices onto the
+	// agent bus once the agent exists (it breaks construction cycles).
+	var notifier agentNotifier
+
+	mcpMgr, err := startMCP(rc, reg, log, notifier.notice)
+	if err != nil {
+		fmt.Fprintf(stderr, "mixi: %v\n", err)
+		return modes.ExitUsage
+	}
+	if mcpMgr != nil {
+		defer mcpMgr.Close()
+	}
+
 	apiKey, _ := apiKeyFromEnv(rc.Model.Provider)
 	ctrl := compact.NewController(compact.ControllerConfig{
 		Store:      store,
@@ -140,9 +153,8 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	hooks := ctrl.Hooks()
 	hooks.GetAPIKey = apiKeyFromEnv
 
-	// The TUI answers permission asks through a modal; the asker publishes on
-	// the agent bus once the agent exists (notifier breaks the cycle).
-	var notifier agentNotifier
+	// The TUI answers permission asks through a modal, routed via the
+	// notifier above.
 	var asker perm.Asker
 	if rc.Mode == config.ModeTUI {
 		asker = perm.NotifyAsker{Notify: notifier.publish}
@@ -171,7 +183,7 @@ func realMain(args []string, stdinR io.Reader, piped bool, stdout, stderr io.Wri
 	defer stopSignals()
 
 	if rc.Mode == config.ModeTUI {
-		return runTUI(a, eng, ctrl, store, jobs, rc, stderr)
+		return runTUI(a, eng, ctrl, store, jobs, mcpMgr, rc, stderr)
 	}
 	return modes.RunPrint(context.Background(), modes.PrintDeps{
 		Agent: a, Out: stdout, ErrOut: stderr, Log: log,

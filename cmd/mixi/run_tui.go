@@ -9,6 +9,7 @@ import (
 	"github.com/user/mixi-agent/internal/ai"
 	"github.com/user/mixi-agent/internal/compact"
 	"github.com/user/mixi-agent/internal/config"
+	"github.com/user/mixi-agent/internal/mcp"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
 	"github.com/user/mixi-agent/internal/tools"
@@ -18,15 +19,20 @@ import (
 // runTUI hands the assembled runtime to the interactive frontend and maps
 // its outcome onto a process exit code.
 func runTUI(a *agent.Agent, eng *perm.Engine, ctrl *compact.Controller,
-	store session.Storage, jobs *tools.JobTable, rc *config.RuntimeConfig, stderr io.Writer) int {
-	err := tui.Run(context.Background(), tui.Deps{
+	store session.Storage, jobs *tools.JobTable, mcpMgr *mcp.Manager,
+	rc *config.RuntimeConfig, stderr io.Writer) int {
+	deps := tui.Deps{
 		Agent:     a,
 		Engine:    eng,
 		Compactor: ctrl,
 		Store:     store,
 		Jobs:      jobs,
 		Models:    modelCatalog(rc.Model),
-	})
+	}
+	if mcpMgr != nil { // a nil *Manager must stay a nil interface
+		deps.MCP = mcpMgr
+	}
+	err := tui.Run(context.Background(), deps)
 	if err != nil {
 		fmt.Fprintf(stderr, "mixi: tui: %v\n", err)
 		return 1

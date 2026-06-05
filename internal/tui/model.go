@@ -10,6 +10,7 @@ import (
 
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/ai"
+	"github.com/user/mixi-agent/internal/mcp"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
 )
@@ -22,6 +23,12 @@ type Compactor interface {
 // JobCounter reports live background jobs for the status bar.
 type JobCounter interface{ Live() int }
 
+// MCPFleet exposes MCP server state to /mcp; *mcp.Manager satisfies it.
+type MCPFleet interface {
+	Status() []mcp.ServerStatus
+	Reconnect(name string) error
+}
+
 // Deps wires the TUI to the runtime assembled in cmd/mixi.
 type Deps struct {
 	Agent     *agent.Agent
@@ -29,6 +36,7 @@ type Deps struct {
 	Compactor Compactor
 	Store     session.Storage
 	Jobs      JobCounter
+	MCP       MCPFleet   // nil when no MCP servers are configured
 	Models    []ai.Model // catalog for /model and ctrl+p
 }
 

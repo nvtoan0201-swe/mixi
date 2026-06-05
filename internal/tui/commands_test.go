@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/user/mixi-agent/internal/agent"
 	"github.com/user/mixi-agent/internal/ai"
+	"github.com/user/mixi-agent/internal/mcp"
 	"github.com/user/mixi-agent/internal/perm"
 	"github.com/user/mixi-agent/internal/session"
 )
@@ -137,6 +139,52 @@ func TestDispatchUnknownAndPermissions(t *testing.T) {
 	if got := lastNotice(t, m); !strings.Contains(got, "Permission mode: prompt") ||
 		!strings.Contains(got, "Session grants: none") {
 		t.Fatalf("/permissions output:\n%s", got)
+	}
+}
+
+// fakeFleet stands in for the MCP manager in /mcp tests.
+type fakeFleet struct {
+	statuses     []mcp.ServerStatus
+	reconnected  []string
+	reconnectErr error
+}
+
+func (f *fakeFleet) Status() []mcp.ServerStatus { return f.statuses }
+func (f *fakeFleet) Reconnect(name string) error {
+	f.reconnected = append(f.reconnected, name)
+	return f.reconnectErr
+}
+
+func TestCmdMCPStatusAndReconnect(t *testing.T) {
+	m, _ := commandFixture(t)
+
+	// No fleet wired: helpful notice, no panic.
+	cmdMCP(m, "")
+	if !strings.Contains(lastNotice(t, m), "No MCP servers configured") {
+		t.Fatal("nil fleet must explain how to configure MCP")
+	}
+
+	fleet := &fakeFleet{statuses: []mcp.ServerStatus{
+		{Name: "github", State: mcp.StateReady, Tools: 12},
+		{Name: "jira", State: mcp.StateFailed, Tools: 0},
+	}}
+	m.deps.MCP = fleet
+	cmdMCP(m, "")
+	out := lastNotice(t, m)
+	for _, want := range []string{"github", "ready", "12 tools", "jira", "failed", "reconnect"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("/mcp output missing %q:\n%s", want, out)
+		}
+	}
+
+	cmdMCP(m, "reconnect jira")
+	if len(fleet.reconnected) != 1 || fleet.reconnected[0] != "jira" {
+		t.Fatalf("reconnect dispatch = %v", fleet.reconnected)
+	}
+	fleet.reconnectErr = errors.New("not failed")
+	cmdMCP(m, "reconnect github")
+	if !strings.Contains(lastNotice(t, m), "not failed") {
+		t.Fatal("reconnect error must surface to the user")
 	}
 }
 

@@ -28,7 +28,7 @@ func commandTable() []commandSpec {
 		{"/compact", "compact context now [focus]", cmdCompact},
 		{"/cost", "session token/cost totals", cmdCost},
 		{"/fork", "fork session (use --resume <id> --fork <entry>)", cmdSessionHint},
-		{"/mcp", "MCP servers (not yet available)", cmdMCP},
+		{"/mcp", "MCP server status; /mcp reconnect <name>", cmdMCP},
 		{"/mode", "cycle or set permission mode", cmdMode},
 		{"/model", "cycle or set model", cmdModel},
 		{"/name", "name this session", cmdName},
@@ -217,8 +217,28 @@ func entrySummary(e session.Entry) string {
 	return ""
 }
 
-func cmdMCP(m *rootModel, _ string) tea.Cmd {
-	m.transcript.notice("MCP support lands in a future release.", false)
+func cmdMCP(m *rootModel, arg string) tea.Cmd {
+	fleet := m.deps.MCP
+	if fleet == nil {
+		m.transcript.notice("No MCP servers configured (add mcpServers to settings.json).", false)
+		return nil
+	}
+	if name, ok := strings.CutPrefix(arg, "reconnect "); ok {
+		name = strings.TrimSpace(name)
+		if err := fleet.Reconnect(name); err != nil {
+			m.transcript.notice("MCP reconnect: "+err.Error(), true)
+		} else {
+			m.transcript.notice("Reconnecting MCP server "+name+"…", false)
+		}
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("MCP servers:")
+	for _, st := range fleet.Status() {
+		fmt.Fprintf(&b, "\n  %-20s %-12s %d tools", st.Name, st.State, st.Tools)
+	}
+	b.WriteString("\nReconnect a failed server: /mcp reconnect <name>")
+	m.transcript.notice(b.String(), false)
 	return nil
 }
 
